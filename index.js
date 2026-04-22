@@ -25,20 +25,18 @@ const app = express();
 // ==========================================
 const heartbeat = new HeartbeatManager({
     interval: 30000, // Ping every 30 seconds
-    externalPingUrl: null // Optional: Add your external ping URL here
-    // externalPingUrl: "https://your-app.com/ping" // e.g., for cloud services to prevent idle timeout
+    externalPingUrl: null 
 });
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-let sock; // FIX: Variabel sock dijadikan global agar bisa diakses Webhook di luar startSystem
+let sock; 
 
 // ==========================================
-// 2. WEBHOOK RECEIVER
+// 2. WEBHOOK RECEIVER (FIXED)
 // ==========================================
 
-// Endpoint untuk cek apakah server aktif (Buka ini di Browser)
 app.get("/", (req, res) => {
     res.send(`
         ✅ Server Bot Aktif! <br> 
@@ -48,10 +46,22 @@ app.get("/", (req, res) => {
 });
 
 app.post("/", async (req, res) => {
+    // 1. Validasi awal: Pastikan body ada untuk mencegah crash
+    if (!req.body) {
+        console.log("⚠️ Webhook masuk tanpa body data.");
+        return res.status(400).send("EMPTY_BODY");
+    }
+
     // Balas langsung ke Google Sheets agar script di Sheets cepat selesai
     res.status(200).send("RECEIVED");
 
     const { message, targetJid } = req.body;
+
+    // 2. Validasi isi pesan
+    if (!message) {
+        console.log("⚠️ Webhook masuk tapi field 'message' kosong.");
+        return;
+    }
 
     // Proses pengiriman WA di latar belakang
     if (!sock) {
@@ -72,7 +82,6 @@ app.post("/", async (req, res) => {
 // HEARTBEAT CONTROL ENDPOINTS
 // ==========================================
 
-// GET heartbeat status
 app.get("/heartbeat/status", (req, res) => {
     res.json({
         isActive: heartbeat.isActive,
@@ -81,7 +90,6 @@ app.get("/heartbeat/status", (req, res) => {
     });
 });
 
-// POST to change heartbeat interval
 app.post("/heartbeat/interval", (req, res) => {
     const { interval } = req.body;
     if (!interval || interval < 5000) {
@@ -94,13 +102,11 @@ app.post("/heartbeat/interval", (req, res) => {
     });
 });
 
-// POST to stop heartbeat
 app.post("/heartbeat/stop", (req, res) => {
     heartbeat.stop();
     res.json({ message: "Heartbeat stopped" });
 });
 
-// POST to restart heartbeat
 app.post("/heartbeat/restart", (req, res) => {
     if (sock) {
         const selfJid = sock.user?.id;
@@ -115,7 +121,6 @@ app.post("/heartbeat/restart", (req, res) => {
     }
 });
 
-// Server Listen dipaksa ke host 0.0.0.0 agar bisa diakses dari luar Codespaces
 app.listen(WEBHOOK_PORT, "0.0.0.0", () => {
     console.log(`\n🚀 ==========================================`);
     console.log(`✅ Webhook Server siap di port ${WEBHOOK_PORT}`);
@@ -155,9 +160,8 @@ const parseMultiSelect = (input, options) => {
 // ==========================================
 
 async function startSystem() {
-    sock = await connectToWhatsApp(); // Menghubungkan ke variabel global
+    sock = await connectToWhatsApp(); 
 
-    // ✅ START HEARTBEAT when WhatsApp connects
     sock.ev.on('connection.update', (update) => {
         if (update.connection === 'open') {
             const selfJid = sock.user?.id;
