@@ -7,15 +7,15 @@ const {
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const pino = require("pino");
-const qrcode = require('qrcode-terminal'); // Tambahkan ini
+const qrcode = require('qrcode-terminal');
 
 async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+    // Menggunakan nama folder yang konsisten dengan .gitignore
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
     const { version } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
         version,
-        // printQRInTerminal: true, // Hapus atau abaikan ini karena sudah deprecated
         auth: {
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
@@ -24,31 +24,27 @@ async function connectToWhatsApp() {
         browser: ["TPM System", "Chrome", "1.0.0"]
     });
 
-    sock.ev.on('creds.update', saveCreds);
-
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
         
-        // --- LOGIKA BARU UNTUK RENDER QR ---
         if (qr) {
             console.log("📸 SCAN QR INI DENGAN WHATSAPP KAMU:");
-            qrcode.generate(qr, { small: true }); // Ini yang bakal nampilin kode QR-nya
+            qrcode.generate(qr, { small: true });
         }
 
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
             if (shouldReconnect) {
                 console.log('🔄 Koneksi terputus, mencoba menyambung ulang...');
-                connectToWhatsApp();
-            } else {
-                console.log('❌ Sesi Keluar. Hapus folder auth_info dan scan ulang!');
+                // Biarkan index.js yang menghandle restart proses agar lebih stabil
             }
         } else if (connection === 'open') {
             console.log('✅ WHATSAPP TERHUBUNG!');
         }
     });
 
-    return sock;
+    // WAJIB: Mengembalikan objek agar index.js bisa membaca .ev
+    return { sock, saveCreds };
 }
 
 module.exports = { connectToWhatsApp };
