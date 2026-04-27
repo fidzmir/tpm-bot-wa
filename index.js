@@ -20,11 +20,8 @@ const aiModel = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite-preview
 const tpmState = {};
 const app = express();
 
-// ==========================================
-// HEARTBEAT CONFIGURATION
-// ==========================================
 const heartbeat = new HeartbeatManager({
-    interval: 30000, // Ping every 30 seconds
+    interval: 30000, 
     externalPingUrl: null 
 });
 
@@ -34,7 +31,7 @@ app.use(express.urlencoded({ extended: true }));
 let sock; 
 
 // ==========================================
-// 2. WEBHOOK RECEIVER (FIXED)
+// 2. WEBHOOK RECEIVER
 // ==========================================
 
 app.get("/", (req, res) => {
@@ -46,26 +43,16 @@ app.get("/", (req, res) => {
 });
 
 app.post("/", async (req, res) => {
-    // 1. Validasi awal: Pastikan body ada untuk mencegah crash
     if (!req.body) {
         console.log("⚠️ Webhook masuk tanpa body data.");
         return res.status(400).send("EMPTY_BODY");
     }
 
-    // Balas langsung ke Google Sheets agar script di Sheets cepat selesai
     res.status(200).send("RECEIVED");
-
     const { message, targetJid } = req.body;
 
-    // 2. Validasi isi pesan
-    if (!message) {
-        console.log("⚠️ Webhook masuk tapi field 'message' kosong.");
-        return;
-    }
-
-    // Proses pengiriman WA di latar belakang
-    if (!sock) {
-        console.log("❌ Webhook masuk tapi WA belum terhubung!");
+    if (!message || !sock) {
+        console.log("⚠️ Pesan kosong atau WA belum terhubung.");
         return;
     }
 
@@ -78,55 +65,18 @@ app.post("/", async (req, res) => {
     }
 });
 
-// ==========================================
-// HEARTBEAT CONTROL ENDPOINTS
-// ==========================================
-
+// Heartbeat Endpoints
 app.get("/heartbeat/status", (req, res) => {
-    res.json({
-        isActive: heartbeat.isActive,
-        interval: heartbeat.interval,
-        whatsappConnected: !!sock
-    });
-});
-
-app.post("/heartbeat/interval", (req, res) => {
-    const { interval } = req.body;
-    if (!interval || interval < 5000) {
-        return res.status(400).json({ error: "Interval must be at least 5000ms (5 seconds)" });
-    }
-    heartbeat.setInterval(interval);
-    res.json({ 
-        message: `Heartbeat interval changed to ${interval}ms`,
-        interval: heartbeat.interval 
-    });
-});
-
-app.post("/heartbeat/stop", (req, res) => {
-    heartbeat.stop();
-    res.json({ message: "Heartbeat stopped" });
+    res.json({ isActive: heartbeat.isActive, whatsappConnected: !!sock });
 });
 
 app.post("/heartbeat/restart", (req, res) => {
-    if (sock) {
-        const selfJid = sock.user?.id;
-        if (selfJid) {
-            heartbeat.restart(sock, selfJid);
-            res.json({ message: "Heartbeat restarted" });
-        } else {
-            res.status(400).json({ error: "WhatsApp not connected properly" });
-        }
+    if (sock && sock.user?.id) {
+        heartbeat.restart(sock, sock.user.id);
+        res.json({ message: "Heartbeat restarted" });
     } else {
-        res.status(400).json({ error: "WhatsApp not connected" });
+        res.status(400).json({ error: "WA not connected" });
     }
-});
-
-app.listen(WEBHOOK_PORT, "0.0.0.0", () => {
-    console.log(`\n🚀 ==========================================`);
-    console.log(`✅ Webhook Server siap di port ${WEBHOOK_PORT}`);
-    console.log(`✅ Pastikan Port ${WEBHOOK_PORT} di Codespaces set PUBLIC`);
-    console.log(`✅ Visit: http://localhost:${WEBHOOK_PORT}`);
-    console.log(`🚀 ==========================================\n`);
 });
 
 // ==========================================
@@ -137,10 +87,6 @@ const formatImageUrl = (url) => {
     if (!url) return null;
     if (url.includes("drive.google.com/file/d/")) {
         const fileId = url.split("/d/")[1].split("/")[0];
-        return `https://drive.google.com/uc?export=download&id=${fileId}`;
-    }
-    if (url.includes("thumbnail.googleusercontent.com/doc/")) {
-        const fileId = url.split("/doc/")[1].split("?")[0];
         return `https://drive.google.com/uc?export=download&id=${fileId}`;
     }
     return url;
@@ -156,20 +102,30 @@ const parseMultiSelect = (input, options) => {
 };
 
 // ==========================================
-// 4. MAIN SYSTEM
+// 4. MAIN SYSTEM & WHATSAPP LOGIC
 // ==========================================
 
 async function startSystem() {
-    sock = await connectToWhatsApp(); 
+    // FIX: Import both sock and saveCreds function
+    const { sock: socketInstance, saveCreds } = await connectToWhatsApp(); 
+    sock = socketInstance;
+
+    // CRITICAL FIX: This saves the encryption keys to disk
+    sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', (update) => {
-        if (update.connection === 'open') {
+        const { connection, lastDisconnect } = update;
+        if (connection === 'open') {
+            console.log("✅ WHATSAPP TERHUBUNG!");
             const selfJid = sock.user?.id;
-            if (selfJid) {
-                heartbeat.start(sock, selfJid);
-            }
-        } else if (update.connection === 'close') {
+            if (selfJid) heartbeat.start(sock, selfJid);
+        } else if (connection === 'close') {
             heartbeat.stop();
+            console.log("⚠️ Koneksi terputus. Memaksa restart via PM2...");
+            // Force process exit so PM2 can restart the bot fresh
+            if (lastDisconnect?.error?.output?.statusCode !== 401) {
+                process.exit(1); 
+            }
         }
     });
 
@@ -180,297 +136,161 @@ async function startSystem() {
         const jid = m.key.remoteJid;
         const senderKey = m.key.participant || m.key.remoteJid;
         const pushName = m.pushName || "User WA";
-
         const msg = m.message?.ephemeralMessage?.message || m.message;
         const messageType = getContentType(msg);
         const text = (msg?.conversation || msg?.extendedTextMessage?.text || msg?.imageMessage?.caption || "").trim();
 
-        // [0] FEATURE: /CANCEL
+        // --- COMMAND: /CANCEL ---
         if (text.toLowerCase() === "/cancel") {
             if (tpmState[senderKey]) {
                 delete tpmState[senderKey];
                 return await sock.sendMessage(jid, { text: "🚫 Proses berhasil dibatalkan." });
-            } else {
-                return await sock.sendMessage(jid, { text: "⚠️ Tidak ada proses yang sedang berjalan." });
             }
+            return await sock.sendMessage(jid, { text: "⚠️ Tidak ada proses yang sedang berjalan." });
         }
 
-        // [1] FEATURE: /OPENLIST
+        // --- COMMAND: /OPENLIST ---
         if (text.toLowerCase() === "/openlist") {
             try {
                 const res = await axios.get(`${MANUAL_TPM_URL}?action=getList`);
-                if (!res.data || res.data.length === 0) return await sock.sendMessage(jid, { text: "✅ Tidak ada tag yang OPEN saat ini." });
+                if (!res.data || res.data.length === 0) return await sock.sendMessage(jid, { text: "✅ Tidak ada tag yang OPEN." });
 
                 let responseMsg = "📋 *DAFTAR TAG AM (OPEN):*\n\n";
                 res.data.forEach((item, i) => {
-                    responseMsg += `${i + 1}. *${item.tag}*\n 📅 Tgl: ${item.tanggal || "-"}\n ⚙️ Mesin: ${item.machine || "-"}\n 📄 ${item.desc}\n\n`;
+                    responseMsg += `${i + 1}. *${item.tag}*\n 📅 Tgl: ${item.tanggal}\n ⚙️ Mesin: ${item.machine}\n 📄 ${item.desc}\n\n`;
                 });
-                responseMsg += "Gunakan `/open [KODE_TAG]` untuk detail atau `/close [KODE_TAG]` untuk menutup.";
                 return await sock.sendMessage(jid, { text: responseMsg });
-            } catch (e) {
-                return await sock.sendMessage(jid, { text: "❌ Gagal mengambil data list." });
-            }
+            } catch (e) { return await sock.sendMessage(jid, { text: "❌ Gagal mengambil data." }); }
         }
 
-        // [2] FEATURE: /OPEN [KODE TAG]
+        // --- COMMAND: /OPEN [TAG] ---
         if (text.toLowerCase().startsWith("/open ")) {
             const tagCode = text.split(" ")[1].toUpperCase();
             try {
                 const res = await axios.get(`${MANUAL_TPM_URL}?action=getDetail&tag=${tagCode}`);
-                const item = res.data;
-
-                if (!item) return await sock.sendMessage(jid, { text: `❌ Tag *${tagCode}* tidak ditemukan.` });
-
-                let caption = `📋 *DETAIL RED TAG*\n\n🏷️ Tag: *${item.tag}*\n📅 Tgl: ${item.tanggal}\n⚙️ Msn: ${item.machine}\n📄 Desc: ${item.desc}\n\n`;
-                const finalImageUrl = formatImageUrl(item.photoUrl);
-
-                if (finalImageUrl) {
-                    await sock.sendMessage(jid, {
-                        image: { url: finalImageUrl },
-                        caption: caption
-                    }).catch(async () => {
-                        await sock.sendMessage(jid, { text: caption + "⚠️ _Gagal memuat foto, cek manual di sheet._" });
-                    });
-                } else {
-                    await sock.sendMessage(jid, { text: caption + "⚠️ _Foto tidak tersedia._" });
-                }
-            } catch (e) {
-                await sock.sendMessage(jid, { text: "❌ Gagal mengambil detail tag." });
-            }
+                if (!res.data) return await sock.sendMessage(jid, { text: `❌ Tag *${tagCode}* tidak ditemukan.` });
+                
+                let caption = `📋 *DETAIL RED TAG*\n\n🏷️ Tag: *${res.data.tag}*\n📅 Tgl: ${res.data.tanggal}\n⚙️ Msn: ${res.data.machine}\n📄 Desc: ${res.data.desc}`;
+                const img = formatImageUrl(res.data.photoUrl);
+                if (img) await sock.sendMessage(jid, { image: { url: img }, caption });
+                else await sock.sendMessage(jid, { text: caption });
+            } catch (e) { await sock.sendMessage(jid, { text: "❌ Error detail tag." }); }
             return;
         }
 
-        // [3] FEATURE: /CLOSE
+        // --- COMMAND: /CLOSE [TAG] ---
         if (text.toLowerCase().startsWith("/close")) {
             const args = text.split(" ");
-            if (args.length < 2) return await sock.sendMessage(jid, { text: "⚠️ Format salah. Contoh: `/close AM-HPL-001`" });
-
-            const tagToClose = args[1].toUpperCase();
-            tpmState[senderKey] = {
-                step: "CLOSE_PHOTO",
-                tagCode: tagToClose,
-                senderName: pushName
-            };
-            tpmState[senderKey].lastBotMsg = await sock.sendMessage(jid, { text: `📸 Menutup tag *${tagToClose}*.\n\nSilahkan kirim *Foto Bukti Close*:` });
+            if (args.length < 2) return await sock.sendMessage(jid, { text: "⚠️ Contoh: `/close AM-HPL-001`" });
+            tpmState[senderKey] = { step: "CLOSE_PHOTO", tagCode: args[1].toUpperCase(), senderName: pushName };
+            tpmState[senderKey].lastBotMsg = await sock.sendMessage(jid, { text: `📸 Kirim *Foto Bukti Close* untuk *${args[1].toUpperCase()}*:` });
             return;
         }
 
-        // [4] STATE HANDLING (CORE LOGIC)
+        // --- STATE HANDLING (TPM FLOW) ---
         if (tpmState[senderKey]) {
             const current = tpmState[senderKey];
 
-            // --- FLOW NGOBROL (GEMINI) ---
             if (current.step === "NGOBROL_CHAT") {
-                const isReply = m.message.extendedTextMessage?.contextInfo?.stanzaId === current.lastBotMsgId;
-                const isGroup = jid.endsWith("@g.us");
-                if (isGroup && !isReply) return;
-
-                await sock.sendMessage(jid, { text: `🧠 _Gemini sedang berpikir..._` });
-
+                await sock.sendMessage(jid, { text: `🧠 _Gemini berpikir..._` });
                 try {
                     const result = await current.chatSession.sendMessage(text);
-                    let responseText = result.response.text();
-
-                    const chartMatch = responseText.match(/\[CHART_JSON\]([\s\S]*?)\[\/CHART_JSON\]/);
-                    if (chartMatch) {
-                        const jsonStr = chartMatch[1].trim();
-                        const chartUrl = `https://quickchart.io/chart?w=500&h=300&c=${encodeURIComponent(jsonStr)}`;
-                        responseText = responseText.replace(chartMatch[0], "").trim();
-
-                        const botMsg = await sock.sendMessage(jid, {
-                            image: { url: chartUrl },
-                            caption: responseText + "\n\n📊 _(Balas untuk diskusi lanjut)_"
-                        });
-                        current.lastBotMsgId = botMsg.key.id;
-                    } else {
-                        const botMsg = await sock.sendMessage(jid, { text: responseText + "\n\n_(Balas pesan ini untuk lanjut)_" });
-                        current.lastBotMsgId = botMsg.key.id;
-                    }
-                } catch (error) {
-                    await sock.sendMessage(jid, { text: "❌ Gagal melanjutkan obrolan." });
-                }
+                    const responseText = result.response.text();
+                    const botMsg = await sock.sendMessage(jid, { text: responseText + "\n\n_(Balas untuk lanjut)_" });
+                    current.lastBotMsgId = botMsg.key.id;
+                } catch (e) { await sock.sendMessage(jid, { text: "❌ Gagal obrolan AI." }); }
                 return;
             }
 
-            // --- FLOW CLOSE PHOTO ---
-            if (current.step === "CLOSE_PHOTO") {
-                if (messageType === 'imageMessage') {
-                    await sock.sendMessage(jid, { text: "⏳ _Memproses penutupan tag..._" });
-                    try {
-                        const buffer = await downloadMediaMessage(m, 'buffer', {});
-                        const res = await axios.post(MANUAL_TPM_URL, {
-                            action: "closeTag",
-                            tagCode: current.tagCode,
-                            imageBuffer: buffer.toString('base64')
-                        });
-
-                        if (res.data === "SUCCESS") {
-                            await sock.sendMessage(jid, { text: `✅ Berhasil! Tag *${current.tagCode}* telah CLOSED.` });
-                        } else {
-                            await sock.sendMessage(jid, { text: `❌ Gagal: Tag tidak ditemukan atau sudah closed.` });
-                        }
-                    } catch (e) { await sock.sendMessage(jid, { text: "❌ Error server saat menutup tag." }); }
-                    delete tpmState[senderKey];
-                }
+            if (current.step === "CLOSE_PHOTO" && messageType === 'imageMessage') {
+                await sock.sendMessage(jid, { text: "⏳ _Memproses..._" });
+                try {
+                    const buffer = await downloadMediaMessage(m, 'buffer', {});
+                    const res = await axios.post(MANUAL_TPM_URL, {
+                        action: "closeTag", tagCode: current.tagCode, imageBuffer: buffer.toString('base64')
+                    });
+                    await sock.sendMessage(jid, { text: res.data === "SUCCESS" ? `✅ Tag *${current.tagCode}* CLOSED.` : "❌ Gagal." });
+                } catch (e) { await sock.sendMessage(jid, { text: "❌ Server error." }); }
+                delete tpmState[senderKey];
                 return;
             }
 
-            // --- FLOW /AM (INPUT STEP BY STEP) ---
+            // AM INPUT FLOW
             if (current.step === "SELECT_SHEET") {
                 const idx = parseInt(text) - 1;
-                if (isNaN(idx) || !current.sheets[idx]) return await sock.sendMessage(jid, { text: "⚠️ Pilihan tidak valid." });
+                if (isNaN(idx) || !current.sheets[idx]) return;
                 current.targetSheet = current.sheets[idx]; current.step = "SELECT_TAG_DEPT";
-                await sock.sendMessage(jid, { text: `✅ Sheet: *${current.targetSheet}*\n\n2. Kode Dept (HPL/ADH/FLR/PVC):`, edit: current.lastBotMsg.key });
+                await sock.sendMessage(jid, { text: `✅ Sheet: *${current.targetSheet}*\n\n2. Kode Dept (HPL/ADH/FLR/PVC):` });
             }
             else if (current.step === "SELECT_TAG_DEPT") {
                 current.deptTag = text.toUpperCase(); current.step = "MACHINE";
-                await sock.sendMessage(jid, { text: `✅ Dept: *${current.deptTag}*\n\n3. Nama Mesin:`, edit: current.lastBotMsg.key });
+                await sock.sendMessage(jid, { text: `✅ Dept: *${current.deptTag}*\n\n3. Nama Mesin:` });
             }
             else if (current.step === "MACHINE") {
-                current.machine = text; current.step = "ABNORMAL";
-                current.opts = ["Bocor", "Usang", "Rusak", "Kendur", "Hilang", "Cacat", "Lain-Lain", "None"];
-                let menu = `✅ Mesin: *${current.machine}*\n\n4. Pilih *Abnormality*:\n0. None\n`;
-                current.opts.slice(0, -1).forEach((o, i) => menu += `${i + 1}. ${o}\n`);
-                await sock.sendMessage(jid, { text: menu, edit: current.lastBotMsg.key });
-            }
-            else if (current.step === "ABNORMAL") {
-                const res = parseMultiSelect(text, current.opts);
-                if (!res) return await sock.sendMessage(jid, { text: "⚠️ Pilihan tidak valid." });
-                current.abnormality = res; current.step = "CONTAM";
-                current.opts = ["Pelumas", "Air/Cairan", "Produk", "Limbah", "Kotoran", "Korosi", "None"];
-                let menu = `✅ Abnormality: *${current.abnormality}*\n\n5. Pilih *Contamination*:\n0. None\n`;
-                current.opts.slice(0, -1).forEach((o, i) => menu += `${i + 1}. ${o}\n`);
-                await sock.sendMessage(jid, { text: menu, edit: current.lastBotMsg.key });
-            }
-            else if (current.step === "CONTAM") {
-                const res = parseMultiSelect(text, current.opts);
-                current.contamination = res; current.step = "ACCESS";
-                current.opts = ["Membersihkan", "Memeriksa", "Melumasi", "Mengganti", "Mengencangkan", "None"];
-                let menu = `✅ Contamination: *${current.contamination}*\n\n6. Pilih *Hard To Access*:\n0. None\n`;
-                current.opts.slice(0, -1).forEach((o, i) => menu += `${i + 1}. ${o}\n`);
-                await sock.sendMessage(jid, { text: menu, edit: current.lastBotMsg.key });
-            }
-            else if (current.step === "ACCESS") {
-                const res = parseMultiSelect(text, current.opts);
-                current.access = res; current.step = "DESC";
-                await sock.sendMessage(jid, { text: `✅ Access: *${current.access}*\n\n7. Deskripsi Singkat:`, edit: current.lastBotMsg.key });
+                current.machine = text; current.step = "DESC";
+                await sock.sendMessage(jid, { text: `✅ Mesin: *${current.machine}*\n\n4. Deskripsi Singkat Abnormality:` });
             }
             else if (current.step === "DESC") {
                 current.description = text; current.step = "PHOTO";
-                await sock.sendMessage(jid, { text: `✅ Deskripsi: *${current.description}*\n\n8. Kirim Foto Temuan:`, edit: current.lastBotMsg.key });
+                await sock.sendMessage(jid, { text: `✅ Deskripsi: *${current.description}*\n\n5. Kirim Foto Temuan:` });
             }
-            else if (messageType === 'imageMessage' && current.step === "PHOTO") {
+            else if (current.step === "PHOTO" && messageType === 'imageMessage') {
+                const buffer = await downloadMediaMessage(m, 'buffer', {});
+                current.imageBuffer = buffer.toString('base64'); current.step = "CONFIRM";
+                await sock.sendMessage(jid, { text: `📝 *KONFIRMASI*\n\nSheet: ${current.targetSheet}\nMesin: ${current.machine}\nDesc: ${current.description}\n\n1. Kirim\n2. Batal` });
+            }
+            else if (current.step === "CONFIRM" && text === "1") {
+                await sock.sendMessage(jid, { text: "⏳ _Mengirim..._" });
                 try {
-                    const buffer = await downloadMediaMessage(m, 'buffer', {});
-                    current.imageBuffer = buffer.toString('base64'); current.step = "CONFIRM";
-                    let review = `📝 *KONFIRMASI RED TAG*\n\n📍 Sheet: *${current.targetSheet}*\n⚙️ Mesin: *${current.machine}*\n⚠️ Abnormal: *${current.abnormality}*\n🧫 Contam: *${current.contamination}*\n🚫 Access: *${current.access}*\n✍️ Deskripsi: *${current.description}*\n\n1. Kirim\n2. Batal`;
-                    await sock.sendMessage(jid, { text: review, edit: current.lastBotMsg.key });
-                } catch (error) { await sock.sendMessage(jid, { text: "❌ Gagal mengunduh foto." }); }
-            }
-            else if (current.step === "CONFIRM") {
-                if (text === "1") {
-                    await sock.sendMessage(jid, { text: "⏳ _Mengirim data ke Spreadsheet..._", edit: current.lastBotMsg.key });
-                    try {
-                        await axios.post(MANUAL_TPM_URL, {
-                            targetSheet: current.targetSheet, deptTag: current.deptTag, machine: current.machine,
-                            senderName: current.senderName, abnormality: current.abnormality, contamination: current.contamination,
-                            access: current.access, description: current.description, imageBuffer: current.imageBuffer
-                        });
-                        current.step = "ASK_NOTICE";
-                        await sock.sendMessage(jid, { text: `🎉 *BERHASIL SIMPAN!*\n\nKirim NOTICE ke Departemen?\n1. Ya (Kirim WA)\n2. Tidak (Selesai)`, edit: current.lastBotMsg.key });
-                    } catch (e) {
-                        await sock.sendMessage(jid, { text: "❌ GAGAL SIMPAN!", edit: current.lastBotMsg.key });
-                        delete tpmState[senderKey];
-                    }
-                } else {
-                    await sock.sendMessage(jid, { text: "❌ Dibatalkan.", edit: current.lastBotMsg.key });
-                    delete tpmState[senderKey];
-                }
-            }
-            else if (current.step === "ASK_NOTICE") {
-                if (text === "1") {
-                    let noticeMsg = `📢 *TPM NOTICE*\n\n🏷️ *Tag:* AM-${current.deptTag}-NEW\n⚙️ *Mesin:* ${current.machine}\n👤 *Pelapor:* ${current.senderName}`;
-                    await sock.sendMessage(DEPT_NOTICE_NUMBER, { text: noticeMsg });
-                    await sock.sendMessage(jid, { text: "✅ Notice Terkirim.", edit: current.lastBotMsg.key });
-                } else {
-                    await sock.sendMessage(jid, { text: "👍 Selesai.", edit: current.lastBotMsg.key });
-                }
+                    await axios.post(MANUAL_TPM_URL, { ...current, action: "saveTag" });
+                    await sock.sendMessage(jid, { text: "✅ BERHASIL SIMPAN!" });
+                } catch (e) { await sock.sendMessage(jid, { text: "❌ GAGAL SIMPAN!" }); }
                 delete tpmState[senderKey];
             }
             return;
         }
 
-        // [5] FEATURE: /NGOBROL (Gemini AI Analysis)
+        // --- COMMAND: /NGOBROL [DEPT] [QUERY] ---
         if (text.toLowerCase().startsWith("/ngobrol ")) {
-            const args = text.trim().split(/\s+/);
-            if (args.length < 3) return await sock.sendMessage(jid, { text: "⚠️ Format: `/ngobrol HPL apa yang rusak?`" });
-
-            const deptCode = args[1].toUpperCase();
-            const promptUser = args.slice(2).join(" ");
+            const args = text.split(" ");
+            if (args.length < 3) return await sock.sendMessage(jid, { text: "⚠️ Format: `/ngobrol HPL ada masalah apa?`" });
+            const dept = args[1].toUpperCase();
+            const prompt = args.slice(2).join(" ");
             const sheetMap = { "HPL": "Produksi HPL", "ADH": "Produksi Adhesive", "FLR": "Produksi Flooring", "PVC": "Produksi PVC Cikupa" };
-            const targetSheet = sheetMap[deptCode];
-
-            if (!targetSheet) return await sock.sendMessage(jid, { text: `⚠️ Kode Dept tidak dikenal (HPL, ADH, FLR, PVC).` });
-
-            await sock.sendMessage(jid, { text: `🧠 _Gemini sedang menganalisis data ${deptCode}..._` });
-
+            
+            await sock.sendMessage(jid, { text: `🧠 _Gemini menganalisis data ${dept}..._` });
             try {
-                const res = await axios.get(`${MANUAL_TPM_URL}?action=getRawData&sheetName=${encodeURIComponent(targetSheet)}`);
-                const sheetData = res.data;
-
-                const systemPrompt = `Anda asisten AI TPM pabrik. Data JSON: ${JSON.stringify(sheetData)}. Gunakan [CHART_JSON]...[/CHART_JSON] untuk grafik.`;
+                const res = await axios.get(`${MANUAL_TPM_URL}?action=getRawData&sheetName=${encodeURIComponent(sheetMap[dept])}`);
                 const chatSession = aiModel.startChat({
-                    history: [
-                        { role: "user", parts: [{ text: systemPrompt }] },
-                        { role: "model", parts: [{ text: "Siap membantu." }] }
-                    ]
+                    history: [{ role: "user", parts: [{ text: `Data: ${JSON.stringify(res.data)}. Jawab singkat.` }] }, { role: "model", parts: [{ text: "Siap." }] }]
                 });
-
-                const result = await chatSession.sendMessage(promptUser);
-                let responseText = result.response.text();
-
-                const chartMatch = responseText.match(/\[CHART_JSON\]([\s\S]*?)\[\/CHART_JSON\]/);
-                let payload = { text: responseText + "\n\n_(Balas untuk diskusi lanjut)_" };
-
-                if (chartMatch) {
-                    const jsonStr = chartMatch[1].trim();
-                    const chartUrl = `https://quickchart.io/chart?w=500&h=300&c=${encodeURIComponent(jsonStr)}`;
-                    responseText = responseText.replace(chartMatch[0], "").trim();
-                    payload = { image: { url: chartUrl }, caption: responseText };
-                }
-
-                const botMsg = await sock.sendMessage(jid, payload);
-                tpmState[senderKey] = { step: "NGOBROL_CHAT", chatSession: chatSession, lastBotMsgId: botMsg.key.id };
-            } catch (error) { await sock.sendMessage(jid, { text: "❌ Gagal menghubungi AI." }); }
+                const result = await chatSession.sendMessage(prompt);
+                const botMsg = await sock.sendMessage(jid, { text: result.response.text() + "\n\n_(Balas untuk lanjut)_" });
+                tpmState[senderKey] = { step: "NGOBROL_CHAT", chatSession, lastBotMsgId: botMsg.key.id };
+            } catch (e) { await sock.sendMessage(jid, { text: "❌ AI Error." }); }
             return;
         }
 
-        // [6] MAIN FEATURE: /AM (Start Process)
+        // --- COMMAND: /AM ---
         if (text.toLowerCase() === "/am") {
-            tpmState[senderKey] = {
-                step: "SELECT_SHEET",
-                senderName: pushName,
-                sheets: ["Produksi HPL", "Produksi Adhesive", "Produksi Flooring", "Produksi PVC Cikupa"]
-            };
-            let menu = `Halo *${pushName}*!\nPilih *Sheet Tujuan*:\n`;
-            tpmState[senderKey].sheets.forEach((s, i) => menu += `${i + 1}. ${s}\n`);
-            tpmState[senderKey].lastBotMsg = await sock.sendMessage(jid, { text: menu });
+            tpmState[senderKey] = { step: "SELECT_SHEET", senderName: pushName, sheets: ["Produksi HPL", "Produksi Adhesive", "Produksi Flooring", "Produksi PVC Cikupa"] };
+            let menu = `Pilih Sheet:\n` + tpmState[senderKey].sheets.map((s, i) => `${i+1}. ${s}`).join("\n");
+            await sock.sendMessage(jid, { text: menu });
             return;
         }
 
-        // [7] FALLBACK KE ORIGINAL BOT
-        if (text.startsWith('/') && !tpmState[senderKey]) {
+        // --- FALLBACK TO SCRIPT GOOGLE ---
+        if (text.startsWith('/')) {
             try {
                 const res = await axios.post(ORIGINAL_BOT_URL, { command: text, sender: jid });
-                const data = res.data;
-                const fmt = (s) => !s ? "" : String(s).replace(/<b>/g, '*').replace(/<\/b>/g, '*');
-                if (data.type === 'text') await sock.sendMessage(jid, { text: fmt(data.content) });
-                else if (data.type === 'photo') {
-                    await sock.sendMessage(jid, { image: { url: formatImageUrl(data.url) }, caption: fmt(data.caption) });
-                }
-            } catch (err) { console.error("Fallback Error"); }
+                if (res.data.type === 'text') await sock.sendMessage(jid, { text: res.data.content });
+            } catch (e) { console.log("Fallback fail"); }
         }
     });
 }
 
-startSystem();
+// Start Server
+app.listen(WEBHOOK_PORT, "0.0.0.0", () => {
+    console.log(`🚀 Webhook Server Port ${WEBHOOK_PORT}`);
+    startSystem();
+});
