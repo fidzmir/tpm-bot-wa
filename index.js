@@ -45,15 +45,6 @@ app.post("/", async (req, res) => {
 // ==========================================
 // 3. HELPERS
 // ==========================================
-const formatImageUrl = (url) => {
-    if (!url) return null;
-    if (url.includes("drive.google.com/file/d/")) {
-        const fileId = url.split("/d/")[1].split("/")[0];
-        return `https://drive.google.com/uc?export=download&id=${fileId}`;
-    }
-    return url;
-};
-
 const parseMultiSelect = (input, options) => {
     const choices = input.split(/[ ,./]+/).map(v => {
         let num = parseInt(v);
@@ -93,10 +84,16 @@ async function startSystem() {
         const messageType = getContentType(msg);
         const text = (msg?.conversation || msg?.extendedTextMessage?.text || msg?.imageMessage?.caption || "").trim();
 
-        // [COMMANDS]
+        // [GLOBAL COMMANDS]
         if (text.toLowerCase() === "/cancel") {
             delete tpmState[senderKey];
             return await sock.sendMessage(jid, { text: "🚫 Proses dibatalkan." });
+        }
+
+        if (text.toLowerCase() === "/am") {
+            tpmState[senderKey] = { step: "SELECT_SHEET", sheets: ["Produksi HPL", "Produksi Adhesive", "Produksi Flooring", "Produksi PVC Cikupa"] };
+            let menu = `Halo *${pushName}*!\nPilih Sheet:\n` + tpmState[senderKey].sheets.map((s, i) => `${i+1}. ${s}`).join("\n");
+            return await sock.sendMessage(jid, { text: menu });
         }
 
         if (text.toLowerCase() === "/openlist") {
@@ -106,28 +103,29 @@ async function startSystem() {
             return await sock.sendMessage(jid, { text: responseMsg });
         }
 
+        if (text.toLowerCase().startsWith("/ngobrol ")) {
+            const args = text.split(" ");
+            const sheetMap = { "HPL": "Produksi HPL", "ADH": "Produksi Adhesive", "FLR": "Produksi Flooring", "PVC": "Produksi PVC Cikupa" };
+            const sheetName = sheetMap[args[1]?.toUpperCase()];
+            if (!sheetName) return await sock.sendMessage(jid, { text: "Format salah. Contoh: /ngobrol HPL ada berapa tag?" });
+            
+            const res = await axios.get(`${MANUAL_TPM_URL}?action=getRawData&sheetName=${encodeURIComponent(sheetName)}`);
+            const chat = aiModel.startChat({ history: [{ role: "user", parts: [{ text: `Data: ${JSON.stringify(res.data)}` }] }] });
+            const result = await chat.sendMessage(args.slice(2).join(" "));
+            const botMsg = await sock.sendMessage(jid, { text: result.response.text() });
+            tpmState[senderKey] = { step: "NGOBROL_CHAT", chatSession: chat, lastBotMsgId: botMsg.key.id };
+            return;
+        }
+
         // [TPM STATE FLOW]
         if (tpmState[senderKey]) {
             const current = tpmState[senderKey];
 
-            // Gemini Chat Flow
             if (current.step === "NGOBROL_CHAT") {
                 const result = await current.chatSession.sendMessage(text);
-                let responseText = result.response.text();
-                const chartMatch = responseText.match(/\[CHART_JSON\]([\s\S]*?)\[\/CHART_JSON\]/);
-                
-                if (chartMatch) {
-                    const chartUrl = `https://quickchart.io/chart?w=500&h=300&c=${encodeURIComponent(chartMatch[1].trim())}`;
-                    const botMsg = await sock.sendMessage(jid, { image: { url: chartUrl }, caption: responseText.replace(chartMatch[0], "") });
-                    current.lastBotMsgId = botMsg.key.id;
-                } else {
-                    const botMsg = await sock.sendMessage(jid, { text: responseText + "\n\n_(Balas untuk lanjut)_" });
-                    current.lastBotMsgId = botMsg.key.id;
-                }
-                return;
+                return await sock.sendMessage(jid, { text: result.response.text() + "\n\n_(Balas untuk lanjut)_" });
             }
 
-            // Input Flow
             if (current.step === "SELECT_SHEET") {
                 const idx = parseInt(text) - 1;
                 if (current.sheets[idx]) {
@@ -171,43 +169,24 @@ async function startSystem() {
                 current.step = "CONFIRM";
                 return await sock.sendMessage(jid, { text: `📝 *KONFIRMASI*\n\nSheet: ${current.targetSheet}\nMesin: ${current.machine}\n\n1. Kirim\n2. Batal` });
             } else if (current.step === "CONFIRM" && text === "1") {
-    await sock.sendMessage(jid, { text: "⏳ Sedang memproses ke Google Sheets..." });
-    try {
-        const response = await axios.post(MANUAL_TPM_URL, { ...current, action: "saveTag", senderName: pushName });
-        
-        // CEK RESPON DARI GAS
-        if (response.data === "OK") {
-            await sock.sendMessage(jid, { text: "✅ *BERHASIL!* Data Red Tag telah tercatat di Google Sheets." });
-        } else {
-            // Jika GAS membalas dengan "Error: ..."
-            await sock.sendMessage(jid, { text: `❌ *GAGAL!* Server merespon: ${response.data}` });
-        }
-    } catch (e) {
-        await sock.sendMessage(jid, { text: "❌ *ERROR!* Koneksi ke server terputus." });
-    }
-    delete tpmState[senderKey];
-    return;
-}
-
-        // [TRIGGER COMMANDS]
-        if (text.toLowerCase() === "/am") {
-            tpmState[senderKey] = { step: "SELECT_SHEET", sheets: ["Produksi HPL", "Produksi Adhesive", "Produksi Flooring", "Produksi PVC Cikupa"] };
-            let menu = `Halo *${pushName}*!\nPilih Sheet:\n` + tpmState[senderKey].sheets.map((s, i) => `${i+1}. ${s}`).join("\n");
-            return await sock.sendMessage(jid, { text: menu });
+                await sock.sendMessage(jid, { text: "⏳ Sedang memproses ke Google Sheets..." });
+                try {
+                    const response = await axios.post(MANUAL_TPM_URL, { ...current, action: "saveTag", senderName: pushName });
+                    if (response.data === "OK") {
+                        await sock.sendMessage(jid, { text: "✅ *BERHASIL!* Data Red Tag telah tercatat." });
+                    } else {
+                        await sock.sendMessage(jid, { text: `❌ *GAGAL!* Server merespon: ${response.data}` });
+                    }
+                } catch (e) {
+                    await sock.sendMessage(jid, { text: "❌ *ERROR!* Koneksi terputus." });
+                }
+                delete tpmState[senderKey];
+                return;
+            }
+            return; // Exit flow tpmState
         }
 
-        if (text.toLowerCase().startsWith("/ngobrol ")) {
-            const args = text.split(" ");
-            const sheetMap = { "HPL": "Produksi HPL", "ADH": "Produksi Adhesive", "FLR": "Produksi Flooring", "PVC": "Produksi PVC Cikupa" };
-            const res = await axios.get(`${MANUAL_TPM_URL}?action=getRawData&sheetName=${encodeURIComponent(sheetMap[args[1].toUpperCase()])}`);
-            const chat = aiModel.startChat({ history: [{ role: "user", parts: [{ text: `Data: ${JSON.stringify(res.data)}` }] }] });
-            const result = await chat.sendMessage(args.slice(2).join(" "));
-            const botMsg = await sock.sendMessage(jid, { text: result.response.text() });
-            tpmState[senderKey] = { step: "NGOBROL_CHAT", chatSession: chat, lastBotMsgId: botMsg.key.id };
-            return;
-        }
-
-        // Fallback ke Script Google Lama
+        // [FALLBACK LAMA]
         if (text.startsWith('/')) {
             const res = await axios.post(ORIGINAL_BOT_URL, { command: text, sender: jid });
             if (res.data.type === 'text') await sock.sendMessage(jid, { text: res.data.content });
