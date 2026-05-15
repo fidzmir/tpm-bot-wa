@@ -171,13 +171,23 @@ async function startSystem() {
                 current.step = "CONFIRM";
                 return await sock.sendMessage(jid, { text: `📝 *KONFIRMASI*\n\nSheet: ${current.targetSheet}\nMesin: ${current.machine}\n\n1. Kirim\n2. Batal` });
             } else if (current.step === "CONFIRM" && text === "1") {
-                await sock.sendMessage(jid, { text: "⏳ Menyimpan..." });
-                await axios.post(MANUAL_TPM_URL, { ...current, action: "saveTag", senderName: pushName });
-                delete tpmState[senderKey];
-                return await sock.sendMessage(jid, { text: "✅ BERHASIL SIMPAN!" });
-            }
-            return;
+    await sock.sendMessage(jid, { text: "⏳ Sedang memproses ke Google Sheets..." });
+    try {
+        const response = await axios.post(MANUAL_TPM_URL, { ...current, action: "saveTag", senderName: pushName });
+        
+        // CEK RESPON DARI GAS
+        if (response.data === "OK") {
+            await sock.sendMessage(jid, { text: "✅ *BERHASIL!* Data Red Tag telah tercatat di Google Sheets." });
+        } else {
+            // Jika GAS membalas dengan "Error: ..."
+            await sock.sendMessage(jid, { text: `❌ *GAGAL!* Server merespon: ${response.data}` });
         }
+    } catch (e) {
+        await sock.sendMessage(jid, { text: "❌ *ERROR!* Koneksi ke server terputus." });
+    }
+    delete tpmState[senderKey];
+    return;
+}
 
         // [TRIGGER COMMANDS]
         if (text.toLowerCase() === "/am") {
