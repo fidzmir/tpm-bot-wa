@@ -296,3 +296,6 @@ async function startSystem() {
 }
 
 app.listen(WEBHOOK_PORT, "0.0.0.0", () => {
+    console.log(`🚀 Server on port ${WEBHOOK_PORT}`);
+    startSystem();
+});
