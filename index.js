@@ -103,6 +103,47 @@ async function startSystem() {
             return await sock.sendMessage(jid, { text: responseMsg });
         }
 
+        // [RESTORED FEATURE] /open [TAGCODE]
+        if (text.toLowerCase().startsWith("/open ")) {
+            const args = text.split(" ");
+            const tagCode = args[1]?.toUpperCase();
+
+            if (!tagCode) {
+                return await sock.sendMessage(jid, { text: "⚠️ Format salah. Contoh: */open AM-HPL-0001*" });
+            }
+
+            await sock.sendMessage(jid, { text: `⏳ Sedang mencari data untuk tag: *${tagCode}*...` });
+
+            try {
+                const res = await axios.get(`${MANUAL_TPM_URL}?action=getDetail&tag=${encodeURIComponent(tagCode)}`);
+                const data = res.data; 
+
+                if (data && data.tag) { 
+                    let detailMsg = `📄 *DETAIL TAG: ${data.tag}*\n\n`;
+                    detailMsg += `*Tanggal:* ${data.tanggal}\n`;
+                    detailMsg += `*Mesin:* ${data.machine}\n`;
+                    detailMsg += `*Deskripsi:* ${data.desc}\n`;
+                    
+                    // 1. Send the text details first
+                    await sock.sendMessage(jid, { text: detailMsg });
+
+                    // 2. If there is a photo URL, send the image!
+                    if (data.photoUrl && data.photoUrl.startsWith('http')) {
+                        await sock.sendMessage(jid, { 
+                            image: { url: data.photoUrl }, 
+                            caption: `📸 Lampiran Foto untuk ${data.tag}` 
+                        });
+                    }
+                    return;
+                } else {
+                    return await sock.sendMessage(jid, { text: `❌ Data untuk tag *${tagCode}* tidak ditemukan.` });
+                }
+            } catch (e) {
+                console.error("Error fetching tag details:", e.message);
+                return await sock.sendMessage(jid, { text: "❌ *ERROR!* Gagal mengambil data dari server Google." });
+            }
+        }
+
         if (text.toLowerCase().startsWith("/ngobrol ")) {
             const args = text.split(" ");
             const sheetMap = { "HPL": "Produksi HPL", "ADH": "Produksi Adhesive", "FLR": "Produksi Flooring", "PVC": "Produksi PVC Cikupa" };
