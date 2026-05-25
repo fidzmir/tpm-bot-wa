@@ -103,7 +103,7 @@ async function startSystem() {
             return await sock.sendMessage(jid, { text: responseMsg });
         }
 
-        // [RESTORED FEATURE] /open [TAGCODE]
+        // [FITUR OPEN TAG DETAIL]
         if (text.toLowerCase().startsWith("/open ")) {
             const args = text.split(" ");
             const tagCode = args[1]?.toUpperCase();
@@ -129,10 +129,8 @@ async function startSystem() {
                     detailMsg += `*Hard to Access:* ${data.access}\n`;
                     detailMsg += `*Deskripsi:* ${data.desc}\n`;
                     
-                    // 1. Send the text details first
                     await sock.sendMessage(jid, { text: detailMsg });
 
-                    // 2. If there is a photo URL, send the image!
                     if (data.photoUrl && data.photoUrl.startsWith('http')) {
                         await sock.sendMessage(jid, { 
                             image: { url: data.photoUrl }, 
@@ -149,6 +147,24 @@ async function startSystem() {
             }
         }
 
+        // [FITUR CLOSE TAG]
+        if (text.toLowerCase().startsWith("/close ")) {
+            const args = text.split(" ");
+            const tagCode = args[1]?.toUpperCase();
+
+            if (!tagCode) {
+                return await sock.sendMessage(jid, { text: "⚠️ Format salah. Contoh: */close AM-HPL-0001*" });
+            }
+
+            tpmState[senderKey] = {
+                step: "CLOSE_PHOTO",
+                tagCode: tagCode
+            };
+            
+            return await sock.sendMessage(jid, { text: `✅ Proses Tutup Tag: *${tagCode}*\n\nSilakan kirimkan *FOTO BUKTI* perbaikan untuk menutup tag ini.\n_(Atau ketik /cancel untuk membatalkan)_` });
+        }
+
+        // [FITUR NGOBROL DENGAN AI]
         if (text.toLowerCase().startsWith("/ngobrol ")) {
             const args = text.split(" ");
             const sheetMap = { "HPL": "Produksi HPL", "ADH": "Produksi Adhesive", "FLR": "Produksi Flooring", "PVC": "Produksi PVC Cikupa" };
@@ -172,6 +188,7 @@ async function startSystem() {
                 return await sock.sendMessage(jid, { text: result.response.text() + "\n\n_(Balas untuk lanjut)_" });
             }
 
+            // --- ALUR INPUT RED TAG ---
             if (current.step === "SELECT_SHEET") {
                 const idx = parseInt(text) - 1;
                 if (current.sheets[idx]) {
@@ -229,6 +246,44 @@ async function startSystem() {
                 delete tpmState[senderKey];
                 return;
             }
+
+            // --- ALUR PROSES CLOSE TAG ---
+            else if (current.step === "CLOSE_PHOTO") {
+                if (messageType !== 'imageMessage') {
+                    return await sock.sendMessage(jid, { text: "⚠️ Harap kirimkan berupa FOTO bukti perbaikan (bukan dokumen/teks)." });
+                }
+                const buffer = await downloadMediaMessage(m, 'buffer', {});
+                current.imageBuffer = buffer.toString('base64');
+                current.step = "CLOSE_CONFIRM";
+                return await sock.sendMessage(jid, { text: `📝 *KONFIRMASI TUTUP TAG*\n\nTag: ${current.tagCode}\n\n1. Konfirmasi Tutup\n2. Batal` });
+            } 
+            else if (current.step === "CLOSE_CONFIRM") {
+                if (text === "1") {
+                    await sock.sendMessage(jid, { text: "⏳ Sedang memproses penutupan tag ke database..." });
+                    try {
+                        const response = await axios.post(MANUAL_TPM_URL, { 
+                            action: "closeTag", 
+                            tagCode: current.tagCode, 
+                            imageBuffer: current.imageBuffer 
+                        });
+                        
+                        if (response.data === "SUCCESS") {
+                            await sock.sendMessage(jid, { text: `✅ *BERHASIL!* Tag *${current.tagCode}* telah ditutup (CLOSE).` });
+                        } else if (response.data === "NOT_FOUND") {
+                            await sock.sendMessage(jid, { text: `❌ *GAGAL!* Tag *${current.tagCode}* tidak ditemukan di database.` });
+                        } else {
+                            await sock.sendMessage(jid, { text: `❌ *GAGAL!* Server merespon: ${response.data}` });
+                        }
+                    } catch (e) {
+                        await sock.sendMessage(jid, { text: "❌ *ERROR!* Koneksi terputus." });
+                    }
+                } else {
+                    await sock.sendMessage(jid, { text: "🚫 Penutupan tag dibatalkan." });
+                }
+                delete tpmState[senderKey];
+                return;
+            }
+
             return; // Exit flow tpmState
         }
 
@@ -241,6 +296,3 @@ async function startSystem() {
 }
 
 app.listen(WEBHOOK_PORT, "0.0.0.0", () => {
-    console.log(`🚀 Server on port ${WEBHOOK_PORT}`);
-    startSystem();
-});
