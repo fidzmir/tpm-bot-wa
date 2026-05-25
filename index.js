@@ -120,8 +120,13 @@ async function startSystem() {
 
                 if (data && data.tag) { 
                     let detailMsg = `📄 *DETAIL TAG: ${data.tag}*\n\n`;
+                    detailMsg += `*Status:* ${data.status}\n`;
                     detailMsg += `*Tanggal:* ${data.tanggal}\n`;
                     detailMsg += `*Mesin:* ${data.machine}\n`;
+                    detailMsg += `*Pelapor:* ${data.pelapor}\n`;
+                    detailMsg += `*Abnormality:* ${data.abnormality}\n`;
+                    detailMsg += `*Contamination:* ${data.contamination}\n`;
+                    detailMsg += `*Hard to Access:* ${data.access}\n`;
                     detailMsg += `*Deskripsi:* ${data.desc}\n`;
                     
                     // 1. Send the text details first
