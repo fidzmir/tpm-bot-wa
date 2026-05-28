@@ -4,6 +4,7 @@ const axios = require("axios");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const express = require("express");
 const { HeartbeatManager } = require('./heartbeat');
+const fs = require('fs'); // Ditambahkan untuk menghapus folder sesi saat corrupt
 
 // ==========================================
 // 1. KONFIGURASI
@@ -63,13 +64,39 @@ async function startSystem() {
 
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
+        
         if (connection === 'open') {
             console.log("✅ WHATSAPP TERHUBUNG!");
             if (sock.user?.id) heartbeat.start(sock, sock.user.id);
-        } else if (connection === 'close') {
-            if (lastDisconnect?.error?.output?.statusCode !== 401) process.exit(1);
+        } 
+        
+        else if (connection === 'close') {
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            console.log(`❌ KONEKSI TERPUTUS! Status Code: ${statusCode}`);
+
+            // 401: Logged out, 403: Forbidden, 500: Bad Session / Corrupt
+            const sessionCorrupted = [401, 403, 500];
+            const FOLDER_SESI = './auth_info_baileys';
+
+            if (sessionCorrupted.includes(statusCode)) {
+                console.log("⚠️ Sesi rusak atau telah dikeluarkan. Menghapus folder auth...");
+                try {
+                    if (fs.existsSync(FOLDER_SESI)) {
+                        fs.rmSync(FOLDER_SESI, { recursive: true, force: true });
+                        console.log("🗑️ Folder 'auth_info_baileys' berhasil dibersihkan.");
+                    }
+                } catch (err) {
+                    console.error("Gagal menghapus folder sesi:", err.message);
+                }
+                console.log("🛑 Sistem dihentikan secara aman. Silakan jalankan ulang untuk scan QR baru.");
+                process.exit(0); 
+            } else {
+                // Gangguan jaringan biasa, biarkan process manager (PM2/Docker) merestart proses
+                console.log("🔄 Putus koneksi biasa (Masalah jaringan/Server restart). Merestart bot...");
+                process.exit(1); 
+            }
         }
     });
 
