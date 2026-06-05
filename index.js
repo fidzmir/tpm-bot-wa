@@ -184,7 +184,7 @@ async function startSystem() {
             return await sock.sendMessage(jid, { text: `✅ Proses Tutup Tag: *${tagCode}*\n\nSilakan kirimkan *FOTO BUKTI* perbaikan untuk menutup tag ini.\n_(Atau ketik /cancel untuk membatalkan)_` });
         }
 
-        // =================================================================
+       // =================================================================
         // ADDED COMMAND: /input [ITEM_CODE] FOR SPREADSHEET OCR FLOW
         // =================================================================
         if (text.toLowerCase().startsWith("/input ")) {
@@ -200,8 +200,11 @@ async function startSystem() {
                 itemWip: itemWip
             };
             
-            return await sock.sendMessage(jid, { text: `✅ Kode Item Terbaca: *${itemWip}*\n\nSilakan kirimkan *FOTO LABEL* produk sekarang untuk diekstrak Lot Number-nya.` });
+            await sock.sendMessage(jid, { text: `✅ Kode Item Terbaca: *${itemWip}*\n\nSilakan kirimkan *FOTO LABEL* produk sekarang untuk diekstrak Lot Number-nya.` });
+            
+            return; // 👈 CRUCIAL FIX: This stops the conflict with ORIGINAL_BOT_URL!
         }
+        // =================================================================
         // =================================================================
 
         if (text.toLowerCase().startsWith("/ngobrol ")) {
