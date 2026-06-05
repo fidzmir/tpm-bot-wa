@@ -4,16 +4,23 @@ const axios = require("axios");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const express = require("express");
 const { HeartbeatManager } = require('./heartbeat');
-const fs = require('fs'); // Ditambahkan untuk menghapus folder sesi saat corrupt
+const fs = require('fs');
+const Tesseract = require('tesseract.js'); // ADDED FOR OCR
 
-// ==========================================
-// 1. KONFIGURASI
-// ==========================================
 const GEMINI_API_KEY = "AIzaSyC1jxgG9yyjlRb41QCNffTkbxdYlo0Jcx4";
 const MANUAL_TPM_URL = "https://script.google.com/macros/s/AKfycbzyBY8Hdhh-2kHEh370mZetwLJGFFUTBD29ZhE8mQAu53-weofI-XU8po2NhwlyfFFI/exec";
 const ORIGINAL_BOT_URL = "https://script.google.com/macros/s/AKfycbyknMRVxLOwYy_jwMaOuaQsL_a4Rjwr5eX_9lNMmO64vpoAcKxDsd_x8yQJw85te4M0/exec";
+const GAS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyt8BvIvEq34wUIF3ctJ_4E8xaxjbZ-EEPpyPK0Q155wKj"; // ADDED FOR SPREADSHEET BRIDGE
 const DEPT_NOTICE_NUMBER = "6285933263178@s.whatsapp.net";
 const WEBHOOK_PORT = 8080;
+
+// Master Spreadsheet Rule Book for OCR Validation
+const ITEM_RULES = {
+    "30G161": /\b\d{5}\b/, "33G198": /\b\d{5}\b/, "36G161": /\b\d{5}\b/, "36G198": /\b\d{5}\b/,
+    "30H160": /\b\d{14}\b/, "33F161": /\b\d{6}A\d{9}\b/, "33F198": /\b\d{6}A\d{9}\b/, "36F161": /\b\d{6}A\d{9}\b/,
+    "33P160": /\b\d{6}-[A-Z0-9]+-\d-\d{2}-\d{2}\b/, "33P150": /\b\d{6}-?[A-Z0-9]?-?\d?-?\d{2,4}-?\d{0,2}\b/,
+    "30R061": /\b\d{5}-[A-Z]\d\b/, "35I161": /\b(HT\d{10}|\d{9})\b/, "35O190": /\b\d[A-Z]\d{6}\b/
+};
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const aiModel = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite-preview" });
@@ -27,9 +34,6 @@ app.use(express.urlencoded({ extended: true }));
 
 let sock; 
 
-// ==========================================
-// 2. WEBHOOK & SERVER
-// ==========================================
 app.get("/", (req, res) => {
     res.send(`✅ Bot Aktif! WA: ${sock ? "Connected" : "Connecting..."}`);
 });
@@ -43,9 +47,6 @@ app.post("/", async (req, res) => {
     } catch (e) { console.error("Webhook Error:", e.message); }
 });
 
-// ==========================================
-// 3. HELPERS
-// ==========================================
 const parseMultiSelect = (input, options) => {
     const choices = input.split(/[ ,./]+/).map(v => {
         let num = parseInt(v);
@@ -55,9 +56,6 @@ const parseMultiSelect = (input, options) => {
     return selected.length > 0 ? selected.join(", ") : null;
 };
 
-// ==========================================
-// 4. CORE SYSTEM
-// ==========================================
 async function startSystem() {
     const { sock: socketInstance, saveCreds } = await connectToWhatsApp(); 
     sock = socketInstance;
@@ -76,7 +74,6 @@ async function startSystem() {
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             console.log(`❌ KONEKSI TERPUTUS! Status Code: ${statusCode}`);
 
-            // 401: Logged out, 403: Forbidden, 500: Bad Session / Corrupt
             const sessionCorrupted = [401, 403, 500];
             const FOLDER_SESI = './auth_info_baileys';
 
@@ -93,7 +90,6 @@ async function startSystem() {
                 console.log("🛑 Sistem dihentikan secara aman. Silakan jalankan ulang untuk scan QR baru.");
                 process.exit(0); 
             } else {
-                // Gangguan jaringan biasa, biarkan process manager (PM2/Docker) merestart proses
                 console.log("🔄 Putus koneksi biasa (Masalah jaringan/Server restart). Merestart bot...");
                 process.exit(1); 
             }
@@ -111,7 +107,42 @@ async function startSystem() {
         const messageType = getContentType(msg);
         const text = (msg?.conversation || msg?.extendedTextMessage?.text || msg?.imageMessage?.caption || "").trim();
 
-        // [GLOBAL COMMANDS]
+        // =================================================================
+        // ADDED FEATURE: INLINE IMAGE OCR & LOGGING TO GOOGLE SHEETS
+        // =================================================================
+        const isOcrImage = messageType === 'imageMessage';
+        const itemWip = text.toUpperCase();
+
+        if (isOcrImage && itemWip && ITEM_RULES[itemWip] && (!tpmState[senderKey] || (tpmState[senderKey].step !== "PHOTO" && tpmState[senderKey].step !== "CLOSE_PHOTO"))) {
+            await sock.sendMessage(jid, { text: "📷 Image received by OCR engine. Processing..." });
+            try {
+                const buffer = await downloadMediaMessage(m, 'buffer', {});
+                const ocrResult = await Tesseract.recognize(buffer, 'eng');
+                const rawText = ocrResult.data.text;
+
+                const response = await axios.post(GAS_WEBHOOK_URL, {
+                    itemWip: itemWip,
+                    ocrText: rawText,
+                    sender: senderKey.split(/[:@]/)[0]
+                });
+
+                if (response.data.success) {
+                    await sock.sendMessage(jid, { 
+                        text: `✅ *Logged to Sheet!*\n\n*Item:* ${itemWip}\n*Lot:* \`${response.data.lot}\`` 
+                    });
+                } else {
+                    await sock.sendMessage(jid, { 
+                        text: `❌ OCR complete, but couldn't locate correct layout format for *${itemWip}*.` 
+                    });
+                }
+            } catch (error) {
+                console.error("OCR Execution Error:", error.message);
+                await sock.sendMessage(jid, { text: "🚨 Bridge Error: Could not process or save data." });
+            }
+            return; // Stops execution early so it doesn't leak into commands
+        }
+        // =================================================================
+
         if (text.toLowerCase() === "/cancel") {
             delete tpmState[senderKey];
             return await sock.sendMessage(jid, { text: "🚫 Proses dibatalkan." });
@@ -130,7 +161,6 @@ async function startSystem() {
             return await sock.sendMessage(jid, { text: responseMsg });
         }
 
-        // [FITUR OPEN TAG DETAIL]
         if (text.toLowerCase().startsWith("/open ")) {
             const args = text.split(" ");
             const tagCode = args[1]?.toUpperCase();
@@ -174,7 +204,6 @@ async function startSystem() {
             }
         }
 
-        // [FITUR CLOSE TAG]
         if (text.toLowerCase().startsWith("/close ")) {
             const args = text.split(" ");
             const tagCode = args[1]?.toUpperCase();
@@ -191,7 +220,6 @@ async function startSystem() {
             return await sock.sendMessage(jid, { text: `✅ Proses Tutup Tag: *${tagCode}*\n\nSilakan kirimkan *FOTO BUKTI* perbaikan untuk menutup tag ini.\n_(Atau ketik /cancel untuk membatalkan)_` });
         }
 
-        // [FITUR NGOBROL DENGAN AI]
         if (text.toLowerCase().startsWith("/ngobrol ")) {
             const args = text.split(" ");
             const sheetMap = { "HPL": "Produksi HPL", "ADH": "Produksi Adhesive", "FLR": "Produksi Flooring", "PVC": "Produksi PVC Cikupa" };
@@ -206,7 +234,6 @@ async function startSystem() {
             return;
         }
 
-        // [TPM STATE FLOW]
         if (tpmState[senderKey]) {
             const current = tpmState[senderKey];
 
@@ -215,7 +242,6 @@ async function startSystem() {
                 return await sock.sendMessage(jid, { text: result.response.text() + "\n\n_(Balas untuk lanjut)_" });
             }
 
-            // --- ALUR INPUT RED TAG ---
             if (current.step === "SELECT_SHEET") {
                 const idx = parseInt(text) - 1;
                 if (current.sheets[idx]) {
@@ -230,6 +256,13 @@ async function startSystem() {
                 current.machine = text; current.step = "ABNORMAL";
                 current.opts = ["Bocor", "Usang", "Rusak", "Kendur", "Hilang", "Cacat", "Lain-Lain"];
                 let menu = `✅ Mesin: *${current.machine}*\n\n4. Pilih *Abnormality* (Contoh: 1,3):\n`;
+                current.opts.forEach((o, i) => menu += `${i + 1}. ${o}\n`);
+                return await sock.sendMessage(jid, { text: menu });
+            } else if (current.step === "ABNORMAL") {
+                current.abnormality = parseMultiSelect(text, current.opts);
+                current.step = "CONTAM";
+                current.opts = ["Pelumas", "Air/Cairan", "Produk", "Limbah", "Kotoran", "Korosi"];
+                let menu = `✅ Abnormal: *${current.abnormality}*\n\n5. Pilih *Contamination*:\n`;
                 current.opts.forEach((o, i) => menu += `${i + 1}. ${o}\n`);
                 return await sock.sendMessage(jid, { text: menu });
             } else if (current.step === "ABNORMAL") {
@@ -274,7 +307,6 @@ async function startSystem() {
                 return;
             }
 
-            // --- ALUR PROSES CLOSE TAG ---
             else if (current.step === "CLOSE_PHOTO") {
                 if (messageType !== 'imageMessage') {
                     return await sock.sendMessage(jid, { text: "⚠️ Harap kirimkan berupa FOTO bukti perbaikan (bukan dokumen/teks)." });
@@ -311,10 +343,9 @@ async function startSystem() {
                 return;
             }
 
-            return; // Exit flow tpmState
+            return;
         }
 
-        // [FALLBACK LAMA]
         if (text.startsWith('/')) {
             const res = await axios.post(ORIGINAL_BOT_URL, { command: text, sender: jid });
             if (res.data.type === 'text') await sock.sendMessage(jid, { text: res.data.content });
