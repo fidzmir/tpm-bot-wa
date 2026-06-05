@@ -264,7 +264,7 @@ async function startSystem() {
                     1. Analisis gambar label fisik secara menyeluruh. Cari dan ekstrak SEMUA string kode, nomor seri, nomor order, nomor roll, atau nomor barcode yang tercetak di label tersebut.
                     2. Lakukan COCOK-COCOKAN (pencocokan pola) dari semua kode yang kamu temukan dengan aturan validasi khusus untuk item "${current.itemWip}" di atas.
                     3. Pilih satu kode yang PALING COCOK dan memenuhi kriteria aturan item tersebut (Utamakan nomor Barcode/Roll/Lot jika ada beberapa yang mirip).
-                    
+                    4. Pastikan Kamu Mengesktrak setiap nomor yang ada satu persatu, semua kode yang ada pokoknya scan dan jajarkan satu persatu
                     Keluaran WAJIB hanya berupa kode/angka bersih hasil pilihanmu saja tanpa ada penjelasan teks, tanpa spasi panjang, tanpa kata pengantar, tanpa tanda baca, dan tanpa backtick markdown. Jika setelah dicocokkan tidak ada satu pun kode di foto yang memenuhi kriteria pola item tersebut, jawab dengan 'NOT_FOUND'.`;
 
                     const aiResponse = await aiModel.generateContent([
