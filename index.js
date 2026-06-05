@@ -7,7 +7,9 @@ const { HeartbeatManager } = require('./heartbeat');
 const fs = require('fs');
 const Tesseract = require('tesseract.js'); 
 
-const GEMINI_API_KEY = "AIzaSyC1jxgG9yyjlRb41QCNffTkbxdYlo0Jcx4";
+// 🔒 AMAN: Sekarang mengambil API Key secara otomatis dari file .env di server VM Anda
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY; 
+
 const MANUAL_TPM_URL = "https://script.google.com/macros/s/AKfycbzyBY8Hdhh-2kHEh370mZetwLJGFFUTBD29ZhE8mQAu53-weofI-XU8po2NhwlyfFFI/exec";
 const ORIGINAL_BOT_URL = "https://script.google.com/macros/s/AKfycbyknMRVxLOwYy_jwMaOuaQsL_a4Rjwr5eX_9lNMmO64vpoAcKxDsd_x8yQJw85te4M0/exec";
 const GAS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyt8BvIvEq34wUIF3ctJ_4E8xaxjbZ-EEPpyPK0Q155wKj/exec"; 
@@ -21,6 +23,12 @@ const ITEM_RULES = {
     "33P160": /\b\d{6}-[A-Z0-9]+-\d-\d{2}-\d{2}\b/, "33P150": /\b\d{6}-?[A-Z0-9]?-?\d?-?\d{2,4}-?\d{0,2}\b/,
     "30R061": /\b\d{5}-[A-Z]\d\b/, "35I161": /\b(HT\d{10}|\d{9,10})\b/, "35O190": /\b\d[A-Z]\d{6}\b/
 };
+
+// Validasi jika API Key tidak ditemukan saat bot dinyalakan
+if (!GEMINI_API_KEY) {
+    console.error("❌ ERROR: GEMINI_API_KEY tidak ditemukan di environment! Pastikan file .env sudah dibuat.");
+    process.exit(1);
+}
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const aiModel = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite-preview" });
@@ -233,12 +241,12 @@ async function startSystem() {
                 }
                 await sock.sendMessage(jid, { text: "⏳ Foto diterima. Menjalankan OCR lokal & ekstraksi AI pintar (Hemat Token)..." });
                 try {
-                    // Tahap 1: Scan gambar jadi teks mentah di server lokal (GRATIS)
+                    // Scan gambar jadi teks mentah secara lokal
                     const buffer = await downloadMediaMessage(m, 'buffer', {});
                     const ocrResult = await Tesseract.recognize(buffer, 'eng');
                     const rawText = ocrResult.data.text;
 
-                    // Tahap 2: Lempar teks pendek ke Gemini AI menggunakan generateContent (FIXED!)
+                    // Kirim teks hasil scan ke Gemini AI
                     const aiPrompt = `Kamu adalah AI pengekstrak data Lot / Roll / Reel / Order Number dari label pabrik kertas.
                     Kode Item WIP yang dicari operator: ${current.itemWip}
                     
@@ -250,7 +258,7 @@ async function startSystem() {
                     Tugas: Cari dan ambil nomor lot, roll, reel, atau order number yang paling sesuai untuk item ini dari teks di atas.
                     Keluaran WAJIB hanya berupa kode/nomor bersihnya saja tanpa ada penjelasan, tanpa spasi panjang, tanpa tanda baca, dan tanpa backtick markdown. Jika benar-benar tidak ditemukan, jawab dengan 'NOT_FOUND'.`;
 
-                    const aiResponse = await aiModel.generateContent(aiPrompt); // FIXED METHOD HERE!
+                    const aiResponse = await aiModel.generateContent(aiPrompt);
                     const extractedLot = aiResponse.response.text().trim().replace(/`/g, "");
 
                     if (extractedLot === "NOT_FOUND") {
@@ -259,7 +267,7 @@ async function startSystem() {
                         return;
                     }
 
-                    // Tahap 3: Kirim data bersih hasil olahan AI ke Google Sheets Webhook
+                    // Kirim hasil akhir ke Google Sheets
                     const response = await fetch(GAS_WEBHOOK_URL, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -276,7 +284,7 @@ async function startSystem() {
                         resData = JSON.parse(responseText);
                     } catch (jsonErr) {
                         console.error("[GAS ERROR RESPONSE]:", responseText);
-                        throw new Error("Google Apps Script mengembalikan format HTML. Pastikan URL Web App Anda sudah benar dan di-deploy sebagai 'Anyone'.");
+                        throw new Error("Google Apps Script mengembalikan format HTML. Pastikan URL Web App Anda sudah benar.");
                     }
 
                     if (resData.success) {
