@@ -5,12 +5,12 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 const express = require("express");
 const { HeartbeatManager } = require('./heartbeat');
 const fs = require('fs');
-const Tesseract = require('tesseract.js'); // ADDED FOR OCR
+const Tesseract = require('tesseract.js'); 
 
 const GEMINI_API_KEY = "AIzaSyC1jxgG9yyjlRb41QCNffTkbxdYlo0Jcx4";
 const MANUAL_TPM_URL = "https://script.google.com/macros/s/AKfycbzyBY8Hdhh-2kHEh370mZetwLJGFFUTBD29ZhE8mQAu53-weofI-XU8po2NhwlyfFFI/exec";
 const ORIGINAL_BOT_URL = "https://script.google.com/macros/s/AKfycbyknMRVxLOwYy_jwMaOuaQsL_a4Rjwr5eX_9lNMmO64vpoAcKxDsd_x8yQJw85te4M0/exec";
-const GAS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyt8BvIvEq34wUIF3ctJ_4E8xaxjbZ-EEPpyPK0Q155wKj"; // ADDED FOR SPREADSHEET BRIDGE
+const GAS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyt8BvIvEq34wUIF3ctJ_4E8xaxjbZ-EEPpyPK0Q155wKj"; 
 const DEPT_NOTICE_NUMBER = "6285933263178@s.whatsapp.net";
 const WEBHOOK_PORT = 8080;
 
@@ -107,17 +107,20 @@ async function startSystem() {
         const messageType = getContentType(msg);
         const text = (msg?.conversation || msg?.extendedTextMessage?.text || msg?.imageMessage?.caption || "").trim();
 
+        // 1. Handle command /cancel
         if (text.toLowerCase() === "/cancel") {
             delete tpmState[senderKey];
             return await sock.sendMessage(jid, { text: "🚫 Proses dibatalkan." });
         }
 
+        // 2. Handle command /am
         if (text.toLowerCase() === "/am") {
             tpmState[senderKey] = { step: "SELECT_SHEET", sheets: ["Produksi HPL", "Produksi Adhesive", "Produksi Flooring", "Produksi PVC Cikupa"] };
             let menu = `Halo *${pushName}*!\nPilih Sheet:\n` + tpmState[senderKey].sheets.map((s, i) => `${i+1}. ${s}`).join("\n");
             return await sock.sendMessage(jid, { text: menu });
         }
 
+        // 3. Handle command /openlist
         if (text.toLowerCase() === "/openlist") {
             const res = await axios.get(`${MANUAL_TPM_URL}?action=getList`);
             let responseMsg = "📋 *DAFTAR TAG OPEN:*\n\n";
@@ -125,6 +128,7 @@ async function startSystem() {
             return await sock.sendMessage(jid, { text: responseMsg });
         }
 
+        // 4. Handle command /open
         if (text.toLowerCase().startsWith("/open ")) {
             const args = text.split(" ");
             const tagCode = args[1]?.toUpperCase();
@@ -168,6 +172,7 @@ async function startSystem() {
             }
         }
 
+        // 5. Handle command /close
         if (text.toLowerCase().startsWith("/close ")) {
             const args = text.split(" ");
             const tagCode = args[1]?.toUpperCase();
@@ -184,12 +189,10 @@ async function startSystem() {
             return await sock.sendMessage(jid, { text: `✅ Proses Tutup Tag: *${tagCode}*\n\nSilakan kirimkan *FOTO BUKTI* perbaikan untuk menutup tag ini.\n_(Atau ketik /cancel untuk membatalkan)_` });
         }
 
-       // =================================================================
-        // ADDED COMMAND: /input [ITEM_CODE] FOR SPREADSHEET OCR FLOW
-        // =================================================================
+        // 6. Handle command /input [ITEM_CODE] for OCR Flow
         if (text.toLowerCase().startsWith("/input ")) {
             const args = text.split(" ");
-            const itemWip = args[1]?.toUpperCase();
+            const itemWip = args[1]?.trim().toUpperCase();
 
             if (!itemWip || !ITEM_RULES[itemWip]) {
                 return await sock.sendMessage(jid, { text: "⚠️ Kode Item WIP tidak valid atau kosong. Contoh: */input 33G198*" });
@@ -201,12 +204,10 @@ async function startSystem() {
             };
             
             await sock.sendMessage(jid, { text: `✅ Kode Item Terbaca: *${itemWip}*\n\nSilakan kirimkan *FOTO LABEL* produk sekarang untuk diekstrak Lot Number-nya.` });
-            
-            return; // 👈 CRUCIAL FIX: This stops the conflict with ORIGINAL_BOT_URL!
+            return; 
         }
-        // =================================================================
-        // =================================================================
 
+        // 7. Handle command /ngobrol
         if (text.toLowerCase().startsWith("/ngobrol ")) {
             const args = text.split(" ");
             const sheetMap = { "HPL": "Produksi HPL", "ADH": "Produksi Adhesive", "FLR": "Produksi Flooring", "PVC": "Produksi PVC Cikupa" };
@@ -221,12 +222,11 @@ async function startSystem() {
             return;
         }
 
+        // 8. Handle State Management
         if (tpmState[senderKey]) {
             const current = tpmState[senderKey];
 
-            // =================================================================
-            // ADDED STATE HANDLER: CAPTURE PHOTO FOR OCR STREAM
-            // =================================================================
+            // OCR PHOTO CAPTURE STATE
             if (current.step === "OCR_PHOTO") {
                 if (messageType !== 'imageMessage') {
                     return await sock.sendMessage(jid, { text: "⚠️ Harap kirimkan foto label produk (bukan teks/dokumen)." });
@@ -237,15 +237,22 @@ async function startSystem() {
                     const ocrResult = await Tesseract.recognize(buffer, 'eng');
                     const rawText = ocrResult.data.text;
 
-                    const response = await axios.post(GAS_WEBHOOK_URL, {
-                        itemWip: current.itemWip,
-                        ocrText: rawText,
-                        sender: senderKey.split(/[:@]/)[0]
+                    // FIXED: Menggunakan Native Fetch Node v20 untuk menghindari bug redirect Axios
+                    const response = await fetch(GAS_WEBHOOK_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            itemWip: current.itemWip,
+                            ocrText: rawText,
+                            sender: senderKey.split(/[:@]/)[0]
+                        })
                     });
 
-                    if (response.data.success) {
+                    const resData = await response.json();
+
+                    if (resData.success) {
                         await sock.sendMessage(jid, { 
-                            text: `✅ *Logged to Sheet!*\n\n*Item:* ${current.itemWip}\n*Lot:* \`${response.data.lot}\`` 
+                            text: `✅ *Logged to Sheet!*\n\n*Item:* ${current.itemWip}\n*Lot:* \`${resData.lot}\`` 
                         });
                     } else {
                         await sock.sendMessage(jid, { 
@@ -253,13 +260,12 @@ async function startSystem() {
                         });
                     }
                 } catch (error) {
-                    console.error("OCR State Handler Error:", error.message);
+                    console.error("OCR Error Detail:", error); // Menampilkan full error di VM terminal
                     await sock.sendMessage(jid, { text: "🚨 Bridge Error: Gagal memproses data OCR." });
                 }
                 delete tpmState[senderKey];
-                return;
+                return; 
             }
-            // =================================================================
 
             if (current.step === "NGOBROL_CHAT") {
                 const result = await current.chatSession.sendMessage(text);
@@ -363,6 +369,7 @@ async function startSystem() {
             return;
         }
 
+        // Fallback for external macro links
         if (text.startsWith('/')) {
             const res = await axios.post(ORIGINAL_BOT_URL, { command: text, sender: jid });
             if (res.data.type === 'text') await sock.sendMessage(jid, { text: res.data.content });
