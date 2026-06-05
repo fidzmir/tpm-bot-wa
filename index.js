@@ -238,7 +238,7 @@ async function startSystem() {
                     const ocrResult = await Tesseract.recognize(buffer, 'eng');
                     const rawText = ocrResult.data.text;
 
-                    // Tahap 2: Lempar teks pendek ke Gemini AI untuk disaring secara cerdas (SANGAT HEMAT TOKEN)
+                    // Tahap 2: Lempar teks pendek ke Gemini AI menggunakan generateContent (FIXED!)
                     const aiPrompt = `Kamu adalah AI pengekstrak data Lot / Roll / Reel / Order Number dari label pabrik kertas.
                     Kode Item WIP yang dicari operator: ${current.itemWip}
                     
@@ -250,7 +250,7 @@ async function startSystem() {
                     Tugas: Cari dan ambil nomor lot, roll, reel, atau order number yang paling sesuai untuk item ini dari teks di atas.
                     Keluaran WAJIB hanya berupa kode/nomor bersihnya saja tanpa ada penjelasan, tanpa spasi panjang, tanpa tanda baca, dan tanpa backtick markdown. Jika benar-benar tidak ditemukan, jawab dengan 'NOT_FOUND'.`;
 
-                    const aiResponse = await aiModel.sendMessage(aiPrompt);
+                    const aiResponse = await aiModel.generateContent(aiPrompt); // FIXED METHOD HERE!
                     const extractedLot = aiResponse.response.text().trim().replace(/`/g, "");
 
                     if (extractedLot === "NOT_FOUND") {
