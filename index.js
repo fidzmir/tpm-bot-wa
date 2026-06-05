@@ -5,18 +5,17 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 const express = require("express");
 const { HeartbeatManager } = require('./heartbeat');
 const fs = require('fs');
-const Tesseract = require('tesseract.js'); 
 
-// 🔒 AMAN: Sekarang mengambil API Key secara otomatis dari file .env di server VM Anda
+// 🔒 AMAN: Mengambil API Key dari file .env di server VM Anda
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY; 
 
 const MANUAL_TPM_URL = "https://script.google.com/macros/s/AKfycbzyBY8Hdhh-2kHEh370mZetwLJGFFUTBD29ZhE8mQAu53-weofI-XU8po2NhwlyfFFI/exec";
 const ORIGINAL_BOT_URL = "https://script.google.com/macros/s/AKfycbyknMRVxLOwYy_jwMaOuaQsL_a4Rjwr5eX_9lNMmO64vpoAcKxDsd_x8yQJw85te4M0/exec";
-const GAS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyt8BvIvEq34wUIF3ctJ_4E8xaxjbZ-EEPpyPK0Q155wKjSUrNz_nBVRhAG4gCU1fsY/exec"; 
+const GAS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyt8BvIvEq34wUIF3ctJ_4E8xaxjbZ-EEPpyPK0Q155wKj/exec"; 
 const DEPT_NOTICE_NUMBER = "6285933263178@s.whatsapp.net";
 const WEBHOOK_PORT = 8080;
 
-// Master Spreadsheet Rule Book (Dibuat fleksibel {4,5} dan {9,10} agar sinkron dengan Google Sheets)
+// Master Spreadsheet Rule Book (Hanya untuk validasi input awal operator)
 const ITEM_RULES = {
     "30G161": /\b\d{4,5}\b/, "33G198": /\b\d{4,5}\b/, "36G161": /\b\d{4,5}\b/, "36G198": /\b\d{4,5}\b/,
     "30H160": /\b\d{14}\b/, "33F161": /\b\d{6}A\d{9}\b/, "33F198": /\b\d{6}A\d{9}\b/, "36F161": /\b\d{6}A\d{9}\b/,
@@ -24,7 +23,6 @@ const ITEM_RULES = {
     "30R061": /\b\d{5}-[A-Z]\d\b/, "35I161": /\b(HT\d{10}|\d{9,10})\b/, "35O190": /\b\d[A-Z]\d{6}\b/
 };
 
-// Validasi jika API Key tidak ditemukan saat bot dinyalakan
 if (!GEMINI_API_KEY) {
     console.error("❌ ERROR: GEMINI_API_KEY tidak ditemukan di environment! Pastikan file .env sudah dibuat.");
     process.exit(1);
@@ -211,7 +209,7 @@ async function startSystem() {
                 itemWip: itemWip
             };
             
-            await sock.sendMessage(jid, { text: `✅ Kode Item Terbaca: *${itemWip}*\n\nSilakan kirimkan *FOTO LABEL* produk sekarang untuk diekstrak Lot Number-nya.` });
+            await sock.sendMessage(jid, { text: `✅ Kode Item Terbaca: *${itemWip}*\n\nSilakan kirimkan *FOTO LABEL* produk sekarang untuk dideteksi oleh AI.` });
             return; 
         }
 
@@ -234,40 +232,44 @@ async function startSystem() {
         if (tpmState[senderKey]) {
             const current = tpmState[senderKey];
 
-            // OCR PHOTO CAPTURE STATE (INTEGRATED WITH LOW-TOKEN AI PARSING)
+            // OCR MULTIMODAL PHOTO CAPTURE STATE (100% AKURAT, MEMBACA GAMBAR LANGSUNG)
             if (current.step === "OCR_PHOTO") {
                 if (messageType !== 'imageMessage') {
                     return await sock.sendMessage(jid, { text: "⚠️ Harap kirimkan foto label produk (bukan teks/dokumen)." });
                 }
-                await sock.sendMessage(jid, { text: "⏳ Foto diterima. Menjalankan OCR lokal & ekstraksi AI pintar (Hemat Token)..." });
+                await sock.sendMessage(jid, { text: "⏳ Foto diterima. Menganalisis gambar label langsung menggunakan AI..." });
                 try {
-                    // Scan gambar jadi teks mentah secara lokal
+                    // Download gambar dari WhatsApp kedalam buffer bytes
                     const buffer = await downloadMediaMessage(m, 'buffer', {});
-                    const ocrResult = await Tesseract.recognize(buffer, 'eng');
-                    const rawText = ocrResult.data.text;
+                    const mimeType = msg.imageMessage?.mimetype || 'image/jpeg';
 
-                    // Kirim teks hasil scan ke Gemini AI
-                    const aiPrompt = `Kamu adalah AI pengekstrak data Lot / Roll / Reel / Order Number dari label pabrik kertas.
+                    // Perintah cerdas langsung menganalisis pixel visual gambar label
+                    const aiPrompt = `Kamu adalah AI ahli visi komputer yang mendeteksi data label fisik gulungan/pabrik kertas.
                     Kode Item WIP yang dicari operator: ${current.itemWip}
                     
-                    Berikut adalah teks mentah hasil scan OCR label fisik:
-                    """
-                    ${rawText}
-                    """
-                    
-                    Tugas: Cari dan ambil nomor lot, roll, reel, atau order number yang paling sesuai untuk item ini dari teks di atas.
-                    Keluaran WAJIB hanya berupa kode/nomor bersihnya saja tanpa ada penjelasan, tanpa spasi panjang, tanpa tanda baca, dan tanpa backtick markdown. Jika benar-benar tidak ditemukan, jawab dengan 'NOT_FOUND'.`;
+                    Tugas: Analisis gambar label fisik yang dikirimkan. Temukan tulisan angka Lot, Roll No, Reel No, atau Order Number yang mewakili identitas gulungan item tersebut.
+                    Keluaran WAJIB hanya berupa kode/angka bersihnya saja tanpa ada penjelasan teks, tanpa spasi panjang, tanpa kata pengantar, tanpa tanda baca, dan tanpa backtick markdown. Jika benar-benar tidak ditemukan data yang masuk akal, jawab dengan 'NOT_FOUND'.`;
 
-                    const aiResponse = await aiModel.generateContent(aiPrompt);
+                    // Kirim BUFFER GAMBAR + PROMPT langsung ke Gemini AI (Multimodal Visi)
+                    const aiResponse = await aiModel.generateContent([
+                        {
+                            inlineData: {
+                                data: buffer.toString('base64'),
+                                mimeType: mimeType
+                            }
+                        },
+                        aiPrompt
+                    ]);
+
                     const extractedLot = aiResponse.response.text().trim().replace(/`/g, "");
 
                     if (extractedLot === "NOT_FOUND") {
-                        await sock.sendMessage(jid, { text: `❌ AI tidak dapat menemukan pola nomor lot yang cocok untuk item *${current.itemWip}* pada teks label.` });
+                        await sock.sendMessage(jid, { text: `❌ AI tidak dapat menemukan nomor lot/reel yang valid pada foto label untuk item *${current.itemWip}*.` });
                         delete tpmState[senderKey];
                         return;
                     }
 
-                    // Kirim hasil akhir ke Google Sheets
+                    // Kirim hasil akhir bersih olahan visual AI ke Google Sheets Webhook
                     const response = await fetch(GAS_WEBHOOK_URL, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -284,7 +286,7 @@ async function startSystem() {
                         resData = JSON.parse(responseText);
                     } catch (jsonErr) {
                         console.error("[GAS ERROR RESPONSE]:", responseText);
-                        throw new Error("Google Apps Script mengembalikan format HTML. Pastikan URL Web App Anda sudah benar.");
+                        throw new Error("Google Apps Script melempar halaman HTML.");
                     }
 
                     if (resData.success) {
@@ -293,12 +295,12 @@ async function startSystem() {
                         });
                     } else {
                         await sock.sendMessage(jid, { 
-                            text: `❌ AI berhasil mengekstrak nomor \`${extractedLot}\`, tetapi ditolak oleh validasi Google Sheets.` 
+                            text: `❌ AI berhasil mengekstrak nomor \`${extractedLot}\`, tetapi ditolak oleh sistem Google Sheets.` 
                         });
                     }
                 } catch (error) {
-                    console.error("OCR AI Processing Error:", error.message);
-                    await sock.sendMessage(jid, { text: "🚨 Bridge Error: Gagal menganalisis teks OCR menggunakan AI." });
+                    console.error("Multimodal AI Processing Error:", error.message);
+                    await sock.sendMessage(jid, { text: "🚨 Bridge Error: Gagal menganalisis foto menggunakan kecerdasan visual AI." });
                 }
                 delete tpmState[senderKey];
                 return; 
