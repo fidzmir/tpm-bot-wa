@@ -1,3 +1,4 @@
+require('dotenv').config();
 const { connectToWhatsApp } = require('./session');
 const { getContentType, downloadMediaMessage } = require("@whiskeysockets/baileys");
 const axios = require("axios");
