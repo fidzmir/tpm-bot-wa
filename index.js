@@ -107,42 +107,6 @@ async function startSystem() {
         const messageType = getContentType(msg);
         const text = (msg?.conversation || msg?.extendedTextMessage?.text || msg?.imageMessage?.caption || "").trim();
 
-        // =================================================================
-        // ADDED FEATURE: INLINE IMAGE OCR & LOGGING TO GOOGLE SHEETS
-        // =================================================================
-        const isOcrImage = messageType === 'imageMessage';
-        const itemWip = text.toUpperCase();
-
-        if (isOcrImage && itemWip && ITEM_RULES[itemWip] && (!tpmState[senderKey] || (tpmState[senderKey].step !== "PHOTO" && tpmState[senderKey].step !== "CLOSE_PHOTO"))) {
-            await sock.sendMessage(jid, { text: "📷 Image received by OCR engine. Processing..." });
-            try {
-                const buffer = await downloadMediaMessage(m, 'buffer', {});
-                const ocrResult = await Tesseract.recognize(buffer, 'eng');
-                const rawText = ocrResult.data.text;
-
-                const response = await axios.post(GAS_WEBHOOK_URL, {
-                    itemWip: itemWip,
-                    ocrText: rawText,
-                    sender: senderKey.split(/[:@]/)[0]
-                });
-
-                if (response.data.success) {
-                    await sock.sendMessage(jid, { 
-                        text: `✅ *Logged to Sheet!*\n\n*Item:* ${itemWip}\n*Lot:* \`${response.data.lot}\`` 
-                    });
-                } else {
-                    await sock.sendMessage(jid, { 
-                        text: `❌ OCR complete, but couldn't locate correct layout format for *${itemWip}*.` 
-                    });
-                }
-            } catch (error) {
-                console.error("OCR Execution Error:", error.message);
-                await sock.sendMessage(jid, { text: "🚨 Bridge Error: Could not process or save data." });
-            }
-            return; // Stops execution early so it doesn't leak into commands
-        }
-        // =================================================================
-
         if (text.toLowerCase() === "/cancel") {
             delete tpmState[senderKey];
             return await sock.sendMessage(jid, { text: "🚫 Proses dibatalkan." });
@@ -220,6 +184,26 @@ async function startSystem() {
             return await sock.sendMessage(jid, { text: `✅ Proses Tutup Tag: *${tagCode}*\n\nSilakan kirimkan *FOTO BUKTI* perbaikan untuk menutup tag ini.\n_(Atau ketik /cancel untuk membatalkan)_` });
         }
 
+        // =================================================================
+        // ADDED COMMAND: /input [ITEM_CODE] FOR SPREADSHEET OCR FLOW
+        // =================================================================
+        if (text.toLowerCase().startsWith("/input ")) {
+            const args = text.split(" ");
+            const itemWip = args[1]?.toUpperCase();
+
+            if (!itemWip || !ITEM_RULES[itemWip]) {
+                return await sock.sendMessage(jid, { text: "⚠️ Kode Item WIP tidak valid atau kosong. Contoh: */input 33G198*" });
+            }
+
+            tpmState[senderKey] = {
+                step: "OCR_PHOTO",
+                itemWip: itemWip
+            };
+            
+            return await sock.sendMessage(jid, { text: `✅ Kode Item Terbaca: *${itemWip}*\n\nSilakan kirimkan *FOTO LABEL* produk sekarang untuk diekstrak Lot Number-nya.` });
+        }
+        // =================================================================
+
         if (text.toLowerCase().startsWith("/ngobrol ")) {
             const args = text.split(" ");
             const sheetMap = { "HPL": "Produksi HPL", "ADH": "Produksi Adhesive", "FLR": "Produksi Flooring", "PVC": "Produksi PVC Cikupa" };
@@ -236,6 +220,43 @@ async function startSystem() {
 
         if (tpmState[senderKey]) {
             const current = tpmState[senderKey];
+
+            // =================================================================
+            // ADDED STATE HANDLER: CAPTURE PHOTO FOR OCR STREAM
+            // =================================================================
+            if (current.step === "OCR_PHOTO") {
+                if (messageType !== 'imageMessage') {
+                    return await sock.sendMessage(jid, { text: "⚠️ Harap kirimkan foto label produk (bukan teks/dokumen)." });
+                }
+                await sock.sendMessage(jid, { text: "⏳ Foto diterima. Sedang menjalankan extract OCR..." });
+                try {
+                    const buffer = await downloadMediaMessage(m, 'buffer', {});
+                    const ocrResult = await Tesseract.recognize(buffer, 'eng');
+                    const rawText = ocrResult.data.text;
+
+                    const response = await axios.post(GAS_WEBHOOK_URL, {
+                        itemWip: current.itemWip,
+                        ocrText: rawText,
+                        sender: senderKey.split(/[:@]/)[0]
+                    });
+
+                    if (response.data.success) {
+                        await sock.sendMessage(jid, { 
+                            text: `✅ *Logged to Sheet!*\n\n*Item:* ${current.itemWip}\n*Lot:* \`${response.data.lot}\`` 
+                        });
+                    } else {
+                        await sock.sendMessage(jid, { 
+                            text: `❌ OCR selesai, tetapi pola Lot Number untuk *${current.itemWip}* tidak ditemukan dalam foto.` 
+                        });
+                    }
+                } catch (error) {
+                    console.error("OCR State Handler Error:", error.message);
+                    await sock.sendMessage(jid, { text: "🚨 Bridge Error: Gagal memproses data OCR." });
+                }
+                delete tpmState[senderKey];
+                return;
+            }
+            // =================================================================
 
             if (current.step === "NGOBROL_CHAT") {
                 const result = await current.chatSession.sendMessage(text);
@@ -256,13 +277,6 @@ async function startSystem() {
                 current.machine = text; current.step = "ABNORMAL";
                 current.opts = ["Bocor", "Usang", "Rusak", "Kendur", "Hilang", "Cacat", "Lain-Lain"];
                 let menu = `✅ Mesin: *${current.machine}*\n\n4. Pilih *Abnormality* (Contoh: 1,3):\n`;
-                current.opts.forEach((o, i) => menu += `${i + 1}. ${o}\n`);
-                return await sock.sendMessage(jid, { text: menu });
-            } else if (current.step === "ABNORMAL") {
-                current.abnormality = parseMultiSelect(text, current.opts);
-                current.step = "CONTAM";
-                current.opts = ["Pelumas", "Air/Cairan", "Produk", "Limbah", "Kotoran", "Korosi"];
-                let menu = `✅ Abnormal: *${current.abnormality}*\n\n5. Pilih *Contamination*:\n`;
                 current.opts.forEach((o, i) => menu += `${i + 1}. ${o}\n`);
                 return await sock.sendMessage(jid, { text: menu });
             } else if (current.step === "ABNORMAL") {
