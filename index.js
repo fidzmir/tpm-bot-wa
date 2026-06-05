@@ -10,16 +10,16 @@ const Tesseract = require('tesseract.js');
 const GEMINI_API_KEY = "AIzaSyC1jxgG9yyjlRb41QCNffTkbxdYlo0Jcx4";
 const MANUAL_TPM_URL = "https://script.google.com/macros/s/AKfycbzyBY8Hdhh-2kHEh370mZetwLJGFFUTBD29ZhE8mQAu53-weofI-XU8po2NhwlyfFFI/exec";
 const ORIGINAL_BOT_URL = "https://script.google.com/macros/s/AKfycbyknMRVxLOwYy_jwMaOuaQsL_a4Rjwr5eX_9lNMmO64vpoAcKxDsd_x8yQJw85te4M0/exec";
-const GAS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyt8BvIvEq34wUIF3ctJ_4E8xaxjbZ-EEPpyPK0Q155wKjSUrNz_nBVRhAG4gCU1fsY/exec"; 
+const GAS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyt8BvIvEq34wUIF3ctJ_4E8xaxjbZ-EEPpyPK0Q155wKj/exec"; 
 const DEPT_NOTICE_NUMBER = "6285933263178@s.whatsapp.net";
 const WEBHOOK_PORT = 8080;
 
-// Master Spreadsheet Rule Book for OCR Validation
+// Master Spreadsheet Rule Book (Dibuat fleksibel {4,5} dan {9,10} agar sinkron dengan Google Sheets)
 const ITEM_RULES = {
-    "30G161": /\b\d{5}\b/, "33G198": /\b\d{5}\b/, "36G161": /\b\d{5}\b/, "36G198": /\b\d{5}\b/,
+    "30G161": /\b\d{4,5}\b/, "33G198": /\b\d{4,5}\b/, "36G161": /\b\d{4,5}\b/, "36G198": /\b\d{4,5}\b/,
     "30H160": /\b\d{14}\b/, "33F161": /\b\d{6}A\d{9}\b/, "33F198": /\b\d{6}A\d{9}\b/, "36F161": /\b\d{6}A\d{9}\b/,
     "33P160": /\b\d{6}-[A-Z0-9]+-\d-\d{2}-\d{2}\b/, "33P150": /\b\d{6}-?[A-Z0-9]?-?\d?-?\d{2,4}-?\d{0,2}\b/,
-    "30R061": /\b\d{5}-[A-Z]\d\b/, "35I161": /\b(HT\d{10}|\d{9})\b/, "35O190": /\b\d[A-Z]\d{6}\b/
+    "30R061": /\b\d{5}-[A-Z]\d\b/, "35I161": /\b(HT\d{10}|\d{9,10})\b/, "35O190": /\b\d[A-Z]\d{6}\b/
 };
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
@@ -226,29 +226,58 @@ async function startSystem() {
         if (tpmState[senderKey]) {
             const current = tpmState[senderKey];
 
-            // OCR PHOTO CAPTURE STATE
+            // OCR PHOTO CAPTURE STATE (INTEGRATED WITH LOW-TOKEN AI PARSING)
             if (current.step === "OCR_PHOTO") {
                 if (messageType !== 'imageMessage') {
                     return await sock.sendMessage(jid, { text: "⚠️ Harap kirimkan foto label produk (bukan teks/dokumen)." });
                 }
-                await sock.sendMessage(jid, { text: "⏳ Foto diterima. Sedang menjalankan extract OCR..." });
+                await sock.sendMessage(jid, { text: "⏳ Foto diterima. Menjalankan OCR lokal & ekstraksi AI pintar (Hemat Token)..." });
                 try {
+                    // Tahap 1: Scan gambar jadi teks mentah di server lokal (GRATIS)
                     const buffer = await downloadMediaMessage(m, 'buffer', {});
                     const ocrResult = await Tesseract.recognize(buffer, 'eng');
                     const rawText = ocrResult.data.text;
 
-                    // FIXED: Menggunakan Native Fetch Node v20 untuk menghindari bug redirect Axios
+                    // Tahap 2: Lempar teks pendek ke Gemini AI untuk disaring secara cerdas (SANGAT HEMAT TOKEN)
+                    const aiPrompt = `Kamu adalah AI pengekstrak data Lot / Roll / Reel / Order Number dari label pabrik kertas.
+                    Kode Item WIP yang dicari operator: ${current.itemWip}
+                    
+                    Berikut adalah teks mentah hasil scan OCR label fisik:
+                    """
+                    ${rawText}
+                    """
+                    
+                    Tugas: Cari dan ambil nomor lot, roll, reel, atau order number yang paling sesuai untuk item ini dari teks di atas.
+                    Keluaran WAJIB hanya berupa kode/nomor bersihnya saja tanpa ada penjelasan, tanpa spasi panjang, tanpa tanda baca, dan tanpa backtick markdown. Jika benar-benar tidak ditemukan, jawab dengan 'NOT_FOUND'.`;
+
+                    const aiResponse = await aiModel.sendMessage(aiPrompt);
+                    const extractedLot = aiResponse.response.text().trim().replace(/`/g, "");
+
+                    if (extractedLot === "NOT_FOUND") {
+                        await sock.sendMessage(jid, { text: `❌ AI tidak dapat menemukan pola nomor lot yang cocok untuk item *${current.itemWip}* pada teks label.` });
+                        delete tpmState[senderKey];
+                        return;
+                    }
+
+                    // Tahap 3: Kirim data bersih hasil olahan AI ke Google Sheets Webhook
                     const response = await fetch(GAS_WEBHOOK_URL, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             itemWip: current.itemWip,
-                            ocrText: rawText,
+                            ocrText: extractedLot, 
                             sender: senderKey.split(/[:@]/)[0]
                         })
                     });
 
-                    const resData = await response.json();
+                    const responseText = await response.text();
+                    let resData;
+                    try {
+                        resData = JSON.parse(responseText);
+                    } catch (jsonErr) {
+                        console.error("[GAS ERROR RESPONSE]:", responseText);
+                        throw new Error("Google Apps Script mengembalikan format HTML. Pastikan URL Web App Anda sudah benar dan di-deploy sebagai 'Anyone'.");
+                    }
 
                     if (resData.success) {
                         await sock.sendMessage(jid, { 
@@ -256,12 +285,12 @@ async function startSystem() {
                         });
                     } else {
                         await sock.sendMessage(jid, { 
-                            text: `❌ OCR selesai, tetapi pola Lot Number untuk *${current.itemWip}* tidak ditemukan dalam foto.` 
+                            text: `❌ AI berhasil mengekstrak nomor \`${extractedLot}\`, tetapi ditolak oleh validasi Google Sheets.` 
                         });
                     }
                 } catch (error) {
-                    console.error("OCR Error Detail:", error); // Menampilkan full error di VM terminal
-                    await sock.sendMessage(jid, { text: "🚨 Bridge Error: Gagal memproses data OCR." });
+                    console.error("OCR AI Processing Error:", error.message);
+                    await sock.sendMessage(jid, { text: "🚨 Bridge Error: Gagal menganalisis teks OCR menggunakan AI." });
                 }
                 delete tpmState[senderKey];
                 return; 
