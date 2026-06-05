@@ -254,19 +254,19 @@ async function startSystem() {
                     - Untuk 35O190: Harus berupa 1 digit angka, 1 huruf besar, dan 6 digit angka.
                     `;
 
-                    const aiPrompt = `Kamu adalah AI ahli verifikasi data logistik pabrik kertas.
+                    const aiPrompt = `Kamu adalah AI ahli verifikasi data logistik pabrik kertas tingkat tinggi.
                     Operator sedang menginput data untuk Kode Item WIP: "${current.itemWip}"
                     
                     Berikut adalah panduan pola validasi nomor lot/roll untuk item ini:
                     ${ruleBookText}
                     
                     TUGAS UTAMA:
-                    1. Analisis gambar label fisik secara menyeluruh. Cari dan ekstrak SEMUA string kode, nomor seri, nomor order, nomor roll, atau nomor barcode yang tercetak di label tersebut.
-                    2. Lakukan COCOK-COCOKAN (pencocokan pola) dari semua kode yang kamu temukan dengan aturan validasi khusus untuk item "${current.itemWip}" di atas.
-                    3. Pilih satu kode yang PALING COCOK dan memenuhi kriteria aturan item tersebut (Utamakan nomor Barcode/Roll/Lot jika ada beberapa yang mirip).
-                    4. Pastikan Kamu Mengesktrak setiap nomor yang ada satu persatu, semua kode yang ada pokoknya scan dan jajarkan satu persatu
-                    Keluaran WAJIB hanya berupa kode/angka bersih hasil pilihanmu saja tanpa ada penjelasan teks, tanpa spasi panjang, tanpa kata pengantar, tanpa tanda baca, dan tanpa backtick markdown. Jika setelah dicocokkan tidak ada satu pun kode di foto yang memenuhi kriteria pola item tersebut, jawab dengan 'NOT_FOUND'.`;
-
+                    1. Analisis gambar label fisik secara menyeluruh. Perhatikan area Barcode (garis-garis hitam) dan angka di bawahnya, serta teks di samping tulisan "Lot No.".
+                    2. Cari, kumpulkan, dan gabungkan semua angka murni atau kode yang ada. Jika ada angka yang terpisah oleh spasi di bawah barcode (seperti: 5 6 1 0...), GABUNGKAN menjadi satu string utuh tanpa spasi (menjadi: 5610...).
+                    3. Lakukan pencocokan pola secara ketat dengan aturan validasi khusus untuk item "${current.itemWip}" di atas.
+                    4. Pilih satu kode yang PALING COCOK dan memenuhi kriteria aturan item tersebut.
+                    
+                    Keluaran WAJIB hanya berupa kode/angka bersih hasil pilihanmu saja tanpa ada penjelasan teks, tanpa spasi, tanpa kata pengantar, tanpa tanda baca, dan tanpa backtick markdown. Jika setelah dicocokkan tidak ada satu pun kode di foto yang memenuhi kriteria pola item tersebut, jawab dengan 'NOT_FOUND'.`;
                     const aiResponse = await aiModel.generateContent([
                         {
                             inlineData: {
