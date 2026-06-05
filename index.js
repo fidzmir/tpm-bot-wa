@@ -15,7 +15,7 @@ const GAS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyt8BvIvEq34wUI
 const DEPT_NOTICE_NUMBER = "6285933263178@s.whatsapp.net";
 const WEBHOOK_PORT = 8080;
 
-// Master Spreadsheet Rule Book (Hanya untuk validasi input awal operator)
+// Master Spreadsheet Rule Book (Hanya digunakan sebagai validasi awal ketikan operator di WA)
 const ITEM_RULES = {
     "30G161": /\b\d{4,5}\b/, "33G198": /\b\d{4,5}\b/, "36G161": /\b\d{4,5}\b/, "36G198": /\b\d{4,5}\b/,
     "30H160": /\b\d{14}\b/, "33F161": /\b\d{6}A\d{9}\b/, "33F198": /\b\d{6}A\d{9}\b/, "36F161": /\b\d{6}A\d{9}\b/,
@@ -209,7 +209,7 @@ async function startSystem() {
                 itemWip: itemWip
             };
             
-            await sock.sendMessage(jid, { text: `✅ Kode Item Terbaca: *${itemWip}*\n\nSilakan kirimkan *FOTO LABEL* produk sekarang untuk dideteksi oleh AI.` });
+            await sock.sendMessage(jid, { text: `✅ Kode Item Terbaca: *${itemWip}*\n\nSilakan kirimkan *FOTO LABEL* produk sekarang untuk dideteksi secara cerdas oleh AI.` });
             return; 
         }
 
@@ -232,25 +232,41 @@ async function startSystem() {
         if (tpmState[senderKey]) {
             const current = tpmState[senderKey];
 
-            // OCR MULTIMODAL PHOTO CAPTURE STATE (100% AKURAT, MEMBACA GAMBAR LANGSUNG)
+            // OCR MULTIMODAL PHOTO CAPTURE STATE (INTEGRATED WITH PATTERN-MATCHING PROMPT)
             if (current.step === "OCR_PHOTO") {
                 if (messageType !== 'imageMessage') {
                     return await sock.sendMessage(jid, { text: "⚠️ Harap kirimkan foto label produk (bukan teks/dokumen)." });
                 }
-                await sock.sendMessage(jid, { text: "⏳ Foto diterima. Menganalisis gambar label langsung menggunakan AI..." });
+                await sock.sendMessage(jid, { text: "⏳ Foto diterima. Mencari dan mencocokkan kode dengan aturan master..." });
                 try {
-                    // Download gambar dari WhatsApp kedalam buffer bytes
                     const buffer = await downloadMediaMessage(m, 'buffer', {});
                     const mimeType = msg.imageMessage?.mimetype || 'image/jpeg';
 
-                    // Perintah cerdas langsung menganalisis pixel visual gambar label
-                    const aiPrompt = `Kamu adalah AI ahli visi komputer yang mendeteksi data label fisik gulungan/pabrik kertas.
-                    Kode Item WIP yang dicari operator: ${current.itemWip}
-                    
-                    Tugas: Analisis gambar label fisik yang dikirimkan. Temukan tulisan angka Lot, Roll No, Reel No, atau Order Number yang mewakili identitas gulungan item tersebut.
-                    Keluaran WAJIB hanya berupa kode/angka bersihnya saja tanpa ada penjelasan teks, tanpa spasi panjang, tanpa kata pengantar, tanpa tanda baca, dan tanpa backtick markdown. Jika benar-benar tidak ditemukan data yang masuk akal, jawab dengan 'NOT_FOUND'.`;
+                    // Mengonversi aturan regex menjadi instruksi teks yang mudah dipahami oleh kecerdasan AI
+                    const ruleBookText = `
+                    - Untuk 30G161, 33G198, 36G161, 36G198: Harus berupa 4 sampai 5 digit angka murni (Contoh: 3015, 12345).
+                    - Untuk 30H160: Harus berupa 14 digit angka murni.
+                    - Untuk 33F161, 33F198, 36F161: Harus berupa 6 digit angka, diikuti huruf 'A', lalu diikuti 9 digit angka (Contoh: 123456A123456789).
+                    - Untuk 33P160: Harus berupa format 6 digit angka, tanda strip, kombinasi huruf/angka, tanda strip, 1 digit angka, tanda strip, 2 digit angka, tanda strip, 2 digit angka.
+                    - Untuk 33P150: Harus berupa pola format kode berawalan 6 digit angka yang dipisahkan strip opsional.
+                    - Untuk 30R061: Harus berupa format 5 digit angka, tanda strip, 1 huruf besar, dan 1 digit angka (Contoh: 12345-A1).
+                    - Untuk 35I161: Harus berupa kode berawalan huruf 'HT' diikuti 10 digit angka, ATAU berupa 9 sampai 10 digit angka murni (Contoh: 701364976, 2420936452).
+                    - Untuk 35O190: Harus berupa 1 digit angka, 1 huruf besar, dan 6 digit angka.
+                    `;
 
-                    // Kirim BUFFER GAMBAR + PROMPT langsung ke Gemini AI (Multimodal Visi)
+                    const aiPrompt = `Kamu adalah AI ahli verifikasi data logistik pabrik kertas.
+                    Operator sedang menginput data untuk Kode Item WIP: "${current.itemWip}"
+                    
+                    Berikut adalah panduan pola validasi nomor lot/roll untuk item ini:
+                    ${ruleBookText}
+                    
+                    TUGAS UTAMA:
+                    1. Analisis gambar label fisik secara menyeluruh. Cari dan ekstrak SEMUA string kode, nomor seri, nomor order, nomor roll, atau nomor barcode yang tercetak di label tersebut.
+                    2. Lakukan COCOK-COCOKAN (pencocokan pola) dari semua kode yang kamu temukan dengan aturan validasi khusus untuk item "${current.itemWip}" di atas.
+                    3. Pilih satu kode yang PALING COCOK dan memenuhi kriteria aturan item tersebut (Utamakan nomor Barcode/Roll/Lot jika ada beberapa yang mirip).
+                    
+                    Keluaran WAJIB hanya berupa kode/angka bersih hasil pilihanmu saja tanpa ada penjelasan teks, tanpa spasi panjang, tanpa kata pengantar, tanpa tanda baca, dan tanpa backtick markdown. Jika setelah dicocokkan tidak ada satu pun kode di foto yang memenuhi kriteria pola item tersebut, jawab dengan 'NOT_FOUND'.`;
+
                     const aiResponse = await aiModel.generateContent([
                         {
                             inlineData: {
@@ -264,12 +280,12 @@ async function startSystem() {
                     const extractedLot = aiResponse.response.text().trim().replace(/`/g, "");
 
                     if (extractedLot === "NOT_FOUND") {
-                        await sock.sendMessage(jid, { text: `❌ AI tidak dapat menemukan nomor lot/reel yang valid pada foto label untuk item *${current.itemWip}*.` });
+                        await sock.sendMessage(jid, { text: `❌ AI tidak dapat menemukan nomor lot/reel yang sesuai dengan spesifikasi aturan pola untuk item *${current.itemWip}*.` });
                         delete tpmState[senderKey];
                         return;
                     }
 
-                    // Kirim hasil akhir bersih olahan visual AI ke Google Sheets Webhook
+                    // Kirim hasil akhir bersih hasil cocok-cocokan AI ke Google Sheets
                     const response = await fetch(GAS_WEBHOOK_URL, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -295,11 +311,11 @@ async function startSystem() {
                         });
                     } else {
                         await sock.sendMessage(jid, { 
-                            text: `❌ AI berhasil mengekstrak nomor \`${extractedLot}\`, tetapi ditolak oleh sistem Google Sheets.` 
+                            text: `❌ AI berhasil mencocokkan nomor \`${extractedLot}\`, tetapi ditolak oleh sistem validasi akhir Google Sheets.` 
                         });
                     }
                 } catch (error) {
-                    console.error("Multimodal AI Processing Error:", error.message);
+                    console.error("Multimodal Rule-Matching AI Error:", error.message);
                     await sock.sendMessage(jid, { text: "🚨 Bridge Error: Gagal menganalisis foto menggunakan kecerdasan visual AI." });
                 }
                 delete tpmState[senderKey];
