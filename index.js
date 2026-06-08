@@ -436,7 +436,18 @@ async function startSystem() {
                 const buffer = await downloadMediaMessage(m, 'buffer', {});
                 current.imageBuffer = buffer.toString('base64');
                 current.step = "CONFIRM";
-                return await sock.sendMessage(jid, { text: `📝 *KONFIRMASI*\n\nSheet: ${current.targetSheet}\nMesin: ${current.machine}\n\n1. Kirim\n2. Batal` });
+                
+                let confirmMsg = `📝 *KONFIRMASI RED TAG*\n\n`;
+                confirmMsg += `*Sheet:* ${current.targetSheet}\n`;
+                confirmMsg += `*Dept:* ${current.deptTag}\n`;
+                confirmMsg += `*Mesin:* ${current.machine}\n`;
+                confirmMsg += `*Abnormality:* ${current.abnormality || "-"}\n`;
+                confirmMsg += `*Contamination:* ${current.contamination || "-"}\n`;
+                confirmMsg += `*Hard To Access:* ${current.access || "-"}\n`;
+                confirmMsg += `*Deskripsi:* ${current.description}\n\n`;
+                confirmMsg += `1. Kirim\n2. Batal`;
+                
+                return await sock.sendMessage(jid, { text: confirmMsg });
             } else if (current.step === "CONFIRM") {
                 if (text === "1") {
                     await sock.sendMessage(jid, { text: "⏳ Sedang memproses ke Google Sheets..." });
