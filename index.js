@@ -437,17 +437,21 @@ async function startSystem() {
                 current.imageBuffer = buffer.toString('base64');
                 current.step = "CONFIRM";
                 return await sock.sendMessage(jid, { text: `📝 *KONFIRMASI*\n\nSheet: ${current.targetSheet}\nMesin: ${current.machine}\n\n1. Kirim\n2. Batal` });
-            } else if (current.step === "CONFIRM" && text === "1") {
-                await sock.sendMessage(jid, { text: "⏳ Sedang memproses ke Google Sheets..." });
-                try {
-                    const response = await axios.post(MANUAL_TPM_URL, { ...current, action: "saveTag", senderName: pushName });
-                    if (response.data === "OK") {
-                        await sock.sendMessage(jid, { text: "✅ *BERHASIL!* Data Red Tag telah tercatat." });
-                    } else {
-                        await sock.sendMessage(jid, { text: `❌ *GAGAL!* Server merespon: ${response.data}` });
+            } else if (current.step === "CONFIRM") {
+                if (text === "1") {
+                    await sock.sendMessage(jid, { text: "⏳ Sedang memproses ke Google Sheets..." });
+                    try {
+                        const response = await axios.post(MANUAL_TPM_URL, { ...current, action: "saveTag", senderName: pushName });
+                        if (response.data === "OK") {
+                            await sock.sendMessage(jid, { text: "✅ *BERHASIL!* Data Red Tag telah tercatat." });
+                        } else {
+                            await sock.sendMessage(jid, { text: `❌ *GAGAL!* Server merespon: ${response.data}` });
+                        }
+                    } catch (e) {
+                        await sock.sendMessage(jid, { text: "❌ *ERROR!* Koneksi terputus." });
                     }
-                } catch (e) {
-                    await sock.sendMessage(jid, { text: "❌ *ERROR!* Koneksi terputus." });
+                } else {
+                    await sock.sendMessage(jid, { text: "🚫 Pembuatan tag dibatalkan." });
                 }
                 delete tpmState[senderKey];
                 return;
