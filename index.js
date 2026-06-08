@@ -60,8 +60,14 @@ const parseMultiSelect = (input, options) => {
         let num = parseInt(v);
         return num === 0 ? options.length - 1 : num - 1;
     });
-    const selected = choices.filter(idx => options[idx]).map(idx => options[idx]);
-    return selected.length > 0 ? selected.join(", ") : null;
+    const selected = choices
+        .filter(idx => idx >= 0 && idx < options.length)
+        .map(idx => options[idx]);
+    const nonEmpty = selected.filter(val => val !== "");
+    if (nonEmpty.length > 0) {
+        return nonEmpty.join(", ");
+    }
+    return selected.length > 0 ? "" : null;
 };
 
 const formatToWhatsApp = (text) => {
@@ -383,23 +389,41 @@ async function startSystem() {
                 return await sock.sendMessage(jid, { text: `✅ Dept: *${current.deptTag}*\n\n3. Nama Mesin:` });
             } else if (current.step === "MACHINE") {
                 current.machine = text; current.step = "ABNORMAL";
-                current.opts = ["Bocor", "Usang", "Rusak", "Kendur", "Hilang", "Cacat", "Lain-Lain"];
+                current.opts = ["Bocor", "Usang", "Rusak", "Kendur", "Hilang", "Cacat", "Lain-Lain", ""];
                 let menu = `✅ Mesin: *${current.machine}*\n\n4. Pilih *Abnormality* (Contoh: 1,3):\n`;
-                current.opts.forEach((o, i) => menu += `${i + 1}. ${o}\n`);
+                current.opts.forEach((o, i) => {
+                    if (i === current.opts.length - 1) {
+                        menu += `0. Kosong\n`;
+                    } else {
+                        menu += `${i + 1}. ${o}\n`;
+                    }
+                });
                 return await sock.sendMessage(jid, { text: menu });
             } else if (current.step === "ABNORMAL") {
                 current.abnormality = parseMultiSelect(text, current.opts);
                 current.step = "CONTAM";
-                current.opts = ["Pelumas", "Air/Cairan", "Produk", "Limbah", "Kotoran", "Korosi"];
+                current.opts = ["Pelumas", "Air/Cairan", "Produk", "Limbah", "Kotoran", "Korosi", ""];
                 let menu = `✅ Abnormal: *${current.abnormality}*\n\n5. Pilih *Contamination*:\n`;
-                current.opts.forEach((o, i) => menu += `${i + 1}. ${o}\n`);
+                current.opts.forEach((o, i) => {
+                    if (i === current.opts.length - 1) {
+                        menu += `0. Kosong\n`;
+                    } else {
+                        menu += `${i + 1}. ${o}\n`;
+                    }
+                });
                 return await sock.sendMessage(jid, { text: menu });
             } else if (current.step === "CONTAM") {
                 current.contamination = parseMultiSelect(text, current.opts);
                 current.step = "ACCESS";
-                current.opts = ["Membersihkan", "Memeriksa", "Melumasi", "Mengganti", "Mengencangkan"];
+                current.opts = ["Membersihkan", "Memeriksa", "Melumasi", "Mengganti", "Mengencangkan", ""];
                 let menu = `✅ Contam: *${current.contamination}*\n\n6. Pilih *Hard To Access*:\n`;
-                current.opts.forEach((o, i) => menu += `${i + 1}. ${o}\n`);
+                current.opts.forEach((o, i) => {
+                    if (i === current.opts.length - 1) {
+                        menu += `0. Kosong\n`;
+                    } else {
+                        menu += `${i + 1}. ${o}\n`;
+                    }
+                });
                 return await sock.sendMessage(jid, { text: menu });
             } else if (current.step === "ACCESS") {
                 current.access = parseMultiSelect(text, current.opts);
