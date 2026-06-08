@@ -64,9 +64,42 @@ const parseMultiSelect = (input, options) => {
     return selected.length > 0 ? selected.join(", ") : null;
 };
 
+const formatToWhatsApp = (text) => {
+    if (typeof text !== 'string') return text;
+    return text
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<b\b[^>]*>(.*?)<\/b>/gi, '*$1*')
+        .replace(/<strong\b[^>]*>(.*?)<\/strong>/gi, '*$1*')
+        .replace(/<i\b[^>]*>(.*?)<\/i>/gi, '_$1_')
+        .replace(/<em\b[^>]*>(.*?)<\/em>/gi, '_$1_')
+        .replace(/<code\b[^>]*>(.*?)<\/code>/gi, '`$1`')
+        .replace(/<pre\b[^>]*>(.*?)<\/pre>/gi, '```$1```')
+        .replace(/<\/?(b|strong)>/gi, '*')
+        .replace(/<\/?(i|em)>/gi, '_')
+        .replace(/<\/?code>/gi, '`')
+        .replace(/\*\*([^*]+)\*\*/g, '*$1*')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&nbsp;/g, ' ');
+};
+
 async function startSystem() {
     const { sock: socketInstance, saveCreds } = await connectToWhatsApp(); 
     sock = socketInstance;
+
+    const originalSendMessage = sock.sendMessage.bind(sock);
+    sock.sendMessage = async (jid, content, options) => {
+        if (content && typeof content.text === 'string') {
+            content.text = formatToWhatsApp(content.text);
+        }
+        if (content && typeof content.caption === 'string') {
+            content.caption = formatToWhatsApp(content.caption);
+        }
+        return originalSendMessage(jid, content, options);
+    };
 
     sock.ev.on('creds.update', saveCreds);
 
